@@ -82,7 +82,8 @@
       this.cameraPosition = [0, 0, 0]
       this.animationOffset = 0
       this.allNodesDisabled = false
-
+      this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
+      
       // Track last position for detecting position changes
       this._lastX = 0
       this._lastY = 0
@@ -109,6 +110,7 @@
         this.wireframe = properties[14]
         this.workerAnimation = properties[15]
         this.backFaceCull = properties[16]
+        this.useBoneBoundingBox = properties[17] !== false // Default to true
       }
 
       this.localCenter = [0, 0, 0]
@@ -399,13 +401,14 @@
     _updateBoundingBox(x, y, z, gpuSkinning) {
       // Use the dynamically calculated minBB/maxBB from bone positions
       // These are updated by _updateBoundingBoxFromBones() in gltfModel
-      // Note: We no longer use the static gltfData.boundingBox for GPU skinning
-      // because it doesn't reflect animated poses
       let maxBB = this.maxBB
       let minBB = this.minBB
-
-      // Fallback to static bbox only if dynamic values are not set
-      if (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity)) {
+      
+      // Use static bbox if bone bbox is disabled, or as fallback if dynamic values are not set
+      const useStaticBbox = !this.useBoneBoundingBox || 
+        (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity))
+      
+      if (useStaticBbox && this.gltf?.gltfData?.boundingBox) {
         maxBB = this.gltf.gltfData.boundingBox.max
         minBB = this.gltf.gltfData.boundingBox.min
       }

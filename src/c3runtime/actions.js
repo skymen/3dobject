@@ -357,6 +357,11 @@
       this.updateBbox = true
     },
 
+    SetUseBoneBoundingBox(enable) {
+      this.useBoneBoundingBox = enable
+      this.updateBbox = true
+    },
+
     EnableWireframe(enable) {
       this.wireframe = enable
     },

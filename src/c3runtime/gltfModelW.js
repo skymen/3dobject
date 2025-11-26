@@ -1345,6 +1345,9 @@ class GltfModelWTop {
   // Lightweight bounding box calculation from bone/joint positions
   // Used to keep bbox updated even when offscreen (for visibility testing)
   _updateBoundingBoxFromBones() {
+    // Skip if bone bounding box is disabled
+    if (!this.inst.useBoneBoundingBox) return
+    
     const gltf = this.gltfData
     if (!gltf) return
     

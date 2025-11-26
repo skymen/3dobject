@@ -223,6 +223,9 @@
             TotalTrianglesCulled() {
                 return this.totalTrianglesCulled
             },
+            UseBoneBoundingBox() {
+                return this.useBoneBoundingBox ? 1 : 0;
+            },
             NodeBoundingBox(nodeName) {
                 if (!this.gltf) return JSON.stringify([0,0,0,0,0,0]);
                 if (!this.gltf.gltfData) return JSON.stringify([0,0,0,0,0,0]);

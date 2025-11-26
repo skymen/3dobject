@@ -96,6 +96,10 @@
           "cpu-xform": {
             "name": "Worker BFC",
             "desc": "Whether back face culling should be done by a worker."
+          },
+          "use-bone-bounding-box": {
+            "name": "Use bone bounding box",
+            "desc": "When enabled, calculates bounding box from bone positions (dynamic, follows animation). When disabled, uses static model bounding box."
           }
         },
         "aceCategories": {
@@ -508,6 +512,17 @@
                   "scale": {
                       "name": "Scale",
                       "desc": "Scale factor for bounding box."
+                  }
+              }
+          },
+          "set-use-bone-bounding-box": {
+            "list-name": "Set use bone bounding box",
+            "display-text": "Set use bone bounding box: [b]{0}[/b]",
+            "description": "Enable or disable bone-based bounding box calculation. When disabled, uses the static model bounding box instead.",
+            "params": {
+                  "enable": {
+                      "name": "Enable",
+                      "desc": "Enable bone-based bounding box calculation."
                   }
               }
           },
@@ -1090,6 +1105,11 @@
           "z-bb-max": {
             "description": "Get z bounding box max.",
             "translated-name": "ZBBMax",
+            "params": {}
+          },
+          "use-bone-bounding-box": {
+            "description": "Returns 1 if bone-based bounding box is enabled, 0 if using static bounding box.",
+            "translated-name": "UseBoneBoundingBox",
             "params": {}
           },
           "x-wireframe-width": {

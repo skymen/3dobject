@@ -104,6 +104,9 @@
         new SDK.PluginProperty("check", "cpu-xform", false, {
           interpolatable: false,
         }),
+        new SDK.PluginProperty("check", "use-bone-bounding-box", true, {
+          interpolatable: false,
+        }),
       ])
 
       this._info.AddFileDependency({

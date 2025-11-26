@@ -200,6 +200,18 @@
         ]
       },
       {
+        "id": "set-use-bone-bounding-box",
+        "scriptName": "SetUseBoneBoundingBox",
+        "highlight": false,
+        "params": [
+          {
+            "id": "enable",
+            "type": "boolean",
+            "initialValue": "true"
+          }
+        ]
+      },
+      {
         "id": "set-quaternion",
         "scriptName": "SetQuaternion",
         "highlight": false,
@@ -348,6 +360,14 @@
         "id": "z-bb-max",
         "scriptName": "ZBBMax",
         "expressionName": "ZBBMax",
+        "returnType": "number",
+        "highlight": false,
+        "params": []
+      },
+      {
+        "id": "use-bone-bounding-box",
+        "scriptName": "UseBoneBoundingBox",
+        "expressionName": "UseBoneBoundingBox",
         "returnType": "number",
         "highlight": false,
         "params": []
