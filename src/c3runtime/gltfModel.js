@@ -1258,10 +1258,61 @@ class GltfModelTop {
 
   updateAnimationPolygons(index, time, onScreen, deltaTime, staticGeometry, gpuSkinning) {
     this.updateAnimation(index, time, onScreen, deltaTime)
+    
+    // Always update bounding box from bones (cheap operation) to ensure
+    // visibility testing works correctly even when offscreen
+    this._updateBoundingBoxFromBones()
+    this.inst.updateBbox = true
+    
     if (onScreen) {
       this.getPolygons(staticGeometry, gpuSkinning)
       this.inst.runtime.UpdateRender()
-      this.inst.updateBbox = true
+    }
+  }
+
+  // Lightweight bounding box calculation from bone/joint positions
+  // Used to keep bbox updated even when offscreen (for visibility testing)
+  _updateBoundingBoxFromBones() {
+    const gltf = this.gltfData
+    if (!gltf) return
+    
+    const vec3 = globalThis.glMatrix3D.vec3
+    const minBB = [Infinity, Infinity, Infinity]
+    const maxBB = [-Infinity, -Infinity, -Infinity]
+    
+    // Default padding around bone positions to account for mesh extent
+    const bonePadding = 50
+    let hasBones = false
+    
+    // Get positions from skinned node joints
+    if (gltf.skinnedNodes && gltf.skinnedNodes.length > 0) {
+      for (const skinnedNode of gltf.skinnedNodes) {
+        if (skinnedNode.disabled) continue
+        if (!skinnedNode.skin || !skinnedNode.skin.joints) continue
+        
+        for (const joint of skinnedNode.skin.joints) {
+          if (!joint.matrix) continue
+          hasBones = true
+          
+          // Extract translation from joint matrix (columns 12, 13, 14)
+          const jx = joint.matrix[12]
+          const jy = joint.matrix[13]
+          const jz = joint.matrix[14]
+          
+          minBB[0] = Math.min(minBB[0], jx - bonePadding)
+          minBB[1] = Math.min(minBB[1], jy - bonePadding)
+          minBB[2] = Math.min(minBB[2], jz - bonePadding)
+          maxBB[0] = Math.max(maxBB[0], jx + bonePadding)
+          maxBB[1] = Math.max(maxBB[1], jy + bonePadding)
+          maxBB[2] = Math.max(maxBB[2], jz + bonePadding)
+        }
+      }
+    }
+    
+    // If we found bone positions, update the instance bbox
+    if (hasBones) {
+      this.inst.minBB = minBB
+      this.inst.maxBB = maxBB
     }
   }
 
