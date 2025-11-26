@@ -17,11 +17,7 @@
             "id": "axis",
             "type": "combo",
             "initialValue": "X",
-            "items": [
-              "X",
-              "Y",
-              "Z"
-            ]
+            "items": ["X", "Y", "Z"]
           }
         ]
       },
@@ -107,14 +103,7 @@
             "id": "rotation-order",
             "type": "combo",
             "initialValue": "zxy",
-            "items": [
-              "xyz",
-              "xzy",
-              "yxz",
-              "yzx",
-              "zxy",
-              "zyx"
-            ]
+            "items": ["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"]
           }
         ]
       },
@@ -407,12 +396,12 @@
         "isCompatibleWithTriggers": true,
         "params": [
           {
-              "id": "node-name",
-              "type": "string",
-              "initialValue": ""
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
           }
         ]
-      }   
+      }
     ],
     "actions": [
       {
@@ -865,183 +854,186 @@
         ]
       },
       {
-      "id": "offset-node-uv",
-      "scriptName": "OffsetNodeUV",
-      "highlight": false,
-      "params": [
-        {
-          "id": "node-name",
-          "type": "string",
-          "initialValue": ""
-        },
-        {
-          "id": "u-offset",
-          "type": "number",
-          "initialValue": "0"
-        },
-        {
-          "id": "v-offset",
-          "type": "number",
-          "initialValue": "0"
-        }
-      ]
-    },
-    {
-      "id": "offset-material-uv",
-      "scriptName": "OffsetMaterialUV",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        },
-        {
-          "id": "u-offset",
-          "type": "number",
-          "initialValue": "0"
-        },
-        {
-          "id": "v-offset",
-          "type": "number",
-          "initialValue": "0"
-        }
-      ]
-    },
-    {
-      "id": "rotate-material-uv",
-      "scriptName": "RotateMaterialUV",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        },
-        {
-          "id": "angle",
-          "type": "number",
-          "initialValue": "0"
-        },
-        {
-          "id": "x",
-          "type": "number",
-          "initialValue": "0"
-        },
-        {
-          "id": "y",
-          "type": "number",
-          "initialValue": "0"
-        }
-      ]
-    }],
+        "id": "offset-node-uv",
+        "scriptName": "OffsetNodeUV",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          },
+          {
+            "id": "u-offset",
+            "type": "number",
+            "initialValue": "0"
+          },
+          {
+            "id": "v-offset",
+            "type": "number",
+            "initialValue": "0"
+          }
+        ]
+      },
+      {
+        "id": "offset-material-uv",
+        "scriptName": "OffsetMaterialUV",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          },
+          {
+            "id": "u-offset",
+            "type": "number",
+            "initialValue": "0"
+          },
+          {
+            "id": "v-offset",
+            "type": "number",
+            "initialValue": "0"
+          }
+        ]
+      },
+      {
+        "id": "rotate-material-uv",
+        "scriptName": "RotateMaterialUV",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          },
+          {
+            "id": "angle",
+            "type": "number",
+            "initialValue": "0"
+          },
+          {
+            "id": "x",
+            "type": "number",
+            "initialValue": "0"
+          },
+          {
+            "id": "y",
+            "type": "number",
+            "initialValue": "0"
+          }
+        ]
+      }
+    ],
     "conditions": [],
-    "expressions": [{
-      "id": "u-offset",
-      "scriptName": "UOffset",
-      "expressionName": "UOffset",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "node-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "v-offset",
-      "scriptName": "VOffset",
-      "expressionName": "VOffset",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "node-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "material-rotate-angle",
-      "scriptName": "MaterialRotateAngle",
-      "expressionName": "MaterialRotateAngle",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "material-rotate-x",
-      "scriptName": "MaterialRotateX",
-      "expressionName": "MaterialRotateX",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "material-rotate-y",
-      "scriptName": "MaterialRotateY",
-      "expressionName": "MaterialRotateY",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "material-u-offset",
-      "scriptName": "MaterialUOffset",
-      "expressionName": "MaterialUOffset",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "material-v-offset",
-      "scriptName": "MaterialVOffset",
-      "expressionName": "MaterialVOffset",
-      "returnType": "number",
-      "highlight": false,
-      "params": [
-        {
-          "id": "material-name",
-          "type": "string",
-          "initialValue": ""
-        }
-      ]
-    },
-    {
-      "id": "materials",
-      "scriptName": "Materials",
-      "expressionName": "Materials",
-      "returnType": "string",
-      "highlight": false,
-      "params": []
-    }]
+    "expressions": [
+      {
+        "id": "u-offset",
+        "scriptName": "UOffset",
+        "expressionName": "UOffset",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "v-offset",
+        "scriptName": "VOffset",
+        "expressionName": "VOffset",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "material-rotate-angle",
+        "scriptName": "MaterialRotateAngle",
+        "expressionName": "MaterialRotateAngle",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "material-rotate-x",
+        "scriptName": "MaterialRotateX",
+        "expressionName": "MaterialRotateX",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "material-rotate-y",
+        "scriptName": "MaterialRotateY",
+        "expressionName": "MaterialRotateY",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "material-u-offset",
+        "scriptName": "MaterialUOffset",
+        "expressionName": "MaterialUOffset",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "material-v-offset",
+        "scriptName": "MaterialVOffset",
+        "expressionName": "MaterialVOffset",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "material-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "materials",
+        "scriptName": "Materials",
+        "expressionName": "Materials",
+        "returnType": "string",
+        "highlight": false,
+        "params": []
+      }
+    ]
   },
   "lighting": {
     "conditions": [],
@@ -1332,7 +1324,7 @@
             "type": "boolean",
             "initialValue": "false"
           }
-      ]
+        ]
       },
       {
         "id": "set-animation-blend",

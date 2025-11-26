@@ -1386,7 +1386,7 @@ class GltfModelTop {
   _updateBoundingBoxFromBones() {
     // Skip if bone bounding box is disabled
     if (!this.inst.useBoneBoundingBox) return
-    
+
     const gltf = this.gltfData
     if (!gltf) return
 

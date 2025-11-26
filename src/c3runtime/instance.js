@@ -83,7 +83,7 @@
       this.animationOffset = 0
       this.allNodesDisabled = false
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
-      
+
       // Track last position for detecting position changes
       this._lastX = 0
       this._lastY = 0
@@ -403,11 +403,11 @@
       // These are updated by _updateBoundingBoxFromBones() in gltfModel
       let maxBB = this.maxBB
       let minBB = this.minBB
-      
+
       // Use static bbox if bone bbox is disabled, or as fallback if dynamic values are not set
-      const useStaticBbox = !this.useBoneBoundingBox || 
-        (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity))
-      
+      const useStaticBbox =
+        !this.useBoneBoundingBox || (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity))
+
       if (useStaticBbox && this.gltf?.gltfData?.boundingBox) {
         maxBB = this.gltf.gltfData.boundingBox.max
         minBB = this.gltf.gltfData.boundingBox.min
