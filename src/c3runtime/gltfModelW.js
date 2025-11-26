@@ -1153,6 +1153,118 @@ class GltfModelWTop {
     return names
   }
 
+  // Get world position of a node by name
+  // Works for any node in the scene (mesh nodes, empty transforms, etc.)
+  getNodeWorldPosition(nodeName) {
+    const vec3 = globalThis.glMatrix3D.vec3
+    const gltf = this.gltfData
+    if (!gltf) return null
+    
+    // Search in all nodes
+    let node = null
+    if (gltf.nodes) {
+      for (const n of gltf.nodes) {
+        if (n.name === nodeName) {
+          node = n
+          break
+        }
+      }
+    }
+    
+    // Also check skinned nodes
+    if (!node && gltf.skinnedNodes) {
+      for (const n of gltf.skinnedNodes) {
+        if (n.name === nodeName) {
+          node = n
+          break
+        }
+      }
+    }
+    
+    if (!node || !node.matrix) {
+      return null
+    }
+    
+    // Extract translation from the node's matrix (columns 12, 13, 14)
+    const localPos = vec3.fromValues(node.matrix[12], node.matrix[13], node.matrix[14])
+    
+    // Transform by the instance's modelRotate to get world position
+    const worldPos = vec3.create()
+    vec3.transformMat4(worldPos, localPos, this.modelRotate)
+    
+    return [worldPos[0], worldPos[1], worldPos[2]]
+  }
+
+  // Get world position of a bone/joint by name
+  // Bones are specifically the joints used for skeletal animation
+  getBoneWorldPosition(boneName) {
+    const vec3 = globalThis.glMatrix3D.vec3
+    const gltf = this.gltfData
+    if (!gltf) return null
+    
+    // Search in skinned nodes' joints
+    if (gltf.skinnedNodes) {
+      for (const skinnedNode of gltf.skinnedNodes) {
+        if (!skinnedNode.skin || !skinnedNode.skin.joints) continue
+        
+        for (const joint of skinnedNode.skin.joints) {
+          if (joint.name === boneName) {
+            if (!joint.matrix) return null
+            
+            // Extract translation from joint matrix (columns 12, 13, 14)
+            const localPos = vec3.fromValues(joint.matrix[12], joint.matrix[13], joint.matrix[14])
+            
+            // Transform by the instance's modelRotate to get world position
+            const worldPos = vec3.create()
+            vec3.transformMat4(worldPos, localPos, this.modelRotate)
+            
+            return [worldPos[0], worldPos[1], worldPos[2]]
+          }
+        }
+      }
+    }
+    
+    return null
+  }
+
+  // Get list of all bone/joint names
+  getBoneNames() {
+    const gltf = this.gltfData
+    if (!gltf) return []
+    
+    const names = []
+    if (gltf.skinnedNodes) {
+      for (const skinnedNode of gltf.skinnedNodes) {
+        if (!skinnedNode.skin || !skinnedNode.skin.joints) continue
+        
+        for (const joint of skinnedNode.skin.joints) {
+          if (joint.name && !names.includes(joint.name)) {
+            names.push(joint.name)
+          }
+        }
+      }
+    }
+    
+    return names
+  }
+
+  // Get list of all node names
+  getNodeNames() {
+    const gltf = this.gltfData
+    if (!gltf) return []
+    
+    const names = []
+    if (gltf.nodes) {
+      for (const node of gltf.nodes) {
+        if (node.name) {
+          names.push(node.name)
+        }
+      }
+    }
+    
+    return names
+  }
+
   drawWireFrame(renderer, whiteTexture, tempQuad, x0, y0, z0, x1, y1, z1, x2, y2, z2, xWidth, yWidth, zWidth) {
     renderer.SetTexture(whiteTexture)
     tempQuad.set(0, 0, 1, 0, 0, 1, 0, 1)

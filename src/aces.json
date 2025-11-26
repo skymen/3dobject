@@ -717,6 +717,50 @@
             "initialValue": ""
           }
         ]
+      },
+      {
+        "id": "node-world-position",
+        "scriptName": "NodeWorldPosition",
+        "expressionName": "NodeWorldPosition",
+        "returnType": "string",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "bone-world-position",
+        "scriptName": "BoneWorldPosition",
+        "expressionName": "BoneWorldPosition",
+        "returnType": "string",
+        "highlight": false,
+        "params": [
+          {
+            "id": "bone-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "bone-names",
+        "scriptName": "BoneNames",
+        "expressionName": "BoneNames",
+        "returnType": "string",
+        "highlight": false,
+        "params": []
+      },
+      {
+        "id": "node-names",
+        "scriptName": "NodeNames",
+        "expressionName": "NodeNames",
+        "returnType": "string",
+        "highlight": false,
+        "params": []
       }
     ]
   },

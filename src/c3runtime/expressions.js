@@ -179,6 +179,27 @@
                 // Return as JSON string for consistency with NodePointPosition
                 return `{"x": ${worldPos[0]}, "y": ${worldPos[1]}, "z": ${worldPos[2]}}`;
             },
+            BoneWorldPosition(boneName) {
+                let worldPos = [0, 0, 0];
+                if (this.gltf) {
+                    const pos = this.gltf.getBoneWorldPosition(boneName);
+                    if (pos) {
+                        worldPos = pos;
+                    }
+                }
+                // Return as JSON string
+                return `{"x": ${worldPos[0]}, "y": ${worldPos[1]}, "z": ${worldPos[2]}}`;
+            },
+            BoneNames() {
+                if (!this.gltf) return "[]";
+                const names = this.gltf.getBoneNames();
+                return JSON.stringify(names);
+            },
+            NodeNames() {
+                if (!this.gltf) return "[]";
+                const names = this.gltf.getNodeNames();
+                return JSON.stringify(names);
+            },
             AnimationBlendTime() {
                 return this.animationBlend;
             },

@@ -1254,6 +1254,36 @@
                 "desc": "Node name."
               }
             }
+          },
+          "node-world-position": {
+            "description": "Get world position of a node as JSON string {x, y, z}. Works for any scene node.",
+            "translated-name": "NodeWorldPosition",
+            "params": {
+              "node-name": {
+                "name": "Node name",
+                "desc": "Name of the node to get position from."
+              }
+            }
+          },
+          "bone-world-position": {
+            "description": "Get world position of a bone/joint as JSON string {x, y, z}. For tracking skeletal animation bones.",
+            "translated-name": "BoneWorldPosition",
+            "params": {
+              "bone-name": {
+                "name": "Bone name",
+                "desc": "Name of the bone/joint to get position from."
+              }
+            }
+          },
+          "bone-names": {
+            "description": "Get list of all bone/joint names as JSON array string.",
+            "translated-name": "BoneNames",
+            "params": {}
+          },
+          "node-names": {
+            "description": "Get list of all node names as JSON array string.",
+            "translated-name": "NodeNames",
+            "params": {}
           }
         }
       }
