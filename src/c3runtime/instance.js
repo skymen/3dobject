@@ -83,6 +83,11 @@
       this.animationOffset = 0
       this.allNodesDisabled = false
 
+      // Track last position for detecting position changes
+      this._lastX = 0
+      this._lastY = 0
+      this._lastZ = 0
+
       if (properties) {
         this.scale = properties[0]
         const wi = inst.GetWorldInfo()
@@ -165,6 +170,12 @@
       }
       this.gltf.updateModelRotate(wi.GetX(), wi.GetY(), wi.GetTotalZElevation())
       this._updateBoundingBox(wi.GetX(), wi.GetY(), 0, this.gpuSkinning)
+
+      // Initialize position tracking
+      this._lastX = wi.GetX()
+      this._lastY = wi.GetY()
+      this._lastZ = wi.GetTotalZElevation()
+
       this.Trigger(C3.Plugins.Mikal_3DObject.Cnds.OnLoaded)
     }
 
@@ -182,6 +193,21 @@
 
     Tick() {
       const onScreen = this.IsOnScreen()
+
+      // Detect position changes (x, y, zElevation) and trigger bbox update
+      if (this.loaded) {
+        const wi = this.GetWorldInfo()
+        const x = wi.GetX()
+        const y = wi.GetY()
+        const z = wi.GetTotalZElevation()
+
+        if (x !== this._lastX || y !== this._lastY || z !== this._lastZ) {
+          this._lastX = x
+          this._lastY = y
+          this._lastZ = z
+          this.updateBbox = true
+        }
+      }
 
       if (!this.loaded) {
         if ((!this.instanceModel && this.sdkType.dataLoaded) || (this.instanceModel && this.dataLoaded)) {
@@ -234,7 +260,7 @@
         this.runtime.UpdateRender()
         this.updateBbox = true
       }
-      
+
       // Update transformed bounding box (xMinBB/xMaxBB) even when offscreen
       // This ensures bbox values are always up-to-date for visibility testing
       // and for external queries (e.g., getObjectBounds)
@@ -243,10 +269,10 @@
         const x = wi.GetX()
         const y = wi.GetY()
         const z = wi.GetTotalZElevation()
-        
+
         // Update modelRotate matrix first
         this.gltf.updateModelRotate(x, y, z)
-        
+
         if (this.cpuXform) {
           this._updateBoundingBoxCPU(x, y, z)
         } else {
@@ -255,7 +281,7 @@
         wi.SetBboxChanged()
         this.updateBbox = false
       }
-      
+
       // restore element array buffer
       this.renderer._gl.bindBuffer(this.renderer._gl.ELEMENT_ARRAY_BUFFER, this.renderer._indexBuffer)
     }
@@ -377,13 +403,13 @@
       // because it doesn't reflect animated poses
       let maxBB = this.maxBB
       let minBB = this.minBB
-      
+
       // Fallback to static bbox only if dynamic values are not set
       if (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity)) {
         maxBB = this.gltf.gltfData.boundingBox.max
         minBB = this.gltf.gltfData.boundingBox.min
       }
-      
+
       const cube = [
         [minBB[0], minBB[1], minBB[2]],
         [maxBB[0], minBB[1], minBB[2]],
