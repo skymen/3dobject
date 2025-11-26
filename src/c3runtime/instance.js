@@ -349,12 +349,19 @@
     }
 
     _updateBoundingBox(x, y, z, gpuSkinning) {
+      // Use the dynamically calculated minBB/maxBB from bone positions
+      // These are updated by _updateBoundingBoxFromBones() in gltfModel
+      // Note: We no longer use the static gltfData.boundingBox for GPU skinning
+      // because it doesn't reflect animated poses
       let maxBB = this.maxBB
       let minBB = this.minBB
-      if (gpuSkinning) {
+      
+      // Fallback to static bbox only if dynamic values are not set
+      if (gpuSkinning && (!maxBB || maxBB[0] === -Infinity || minBB[0] === Infinity)) {
         maxBB = this.gltf.gltfData.boundingBox.max
         minBB = this.gltf.gltfData.boundingBox.min
       }
+      
       const cube = [
         [minBB[0], minBB[1], minBB[2]],
         [maxBB[0], minBB[1], minBB[2]],
