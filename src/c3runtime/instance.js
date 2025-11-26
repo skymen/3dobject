@@ -234,6 +234,28 @@
         this.runtime.UpdateRender()
         this.updateBbox = true
       }
+      
+      // Update transformed bounding box (xMinBB/xMaxBB) even when offscreen
+      // This ensures bbox values are always up-to-date for visibility testing
+      // and for external queries (e.g., getObjectBounds)
+      if (this.updateBbox && this.loaded && this.gltf?.modelRotate) {
+        const wi = this.GetWorldInfo()
+        const x = wi.GetX()
+        const y = wi.GetY()
+        const z = wi.GetTotalZElevation()
+        
+        // Update modelRotate matrix first
+        this.gltf.updateModelRotate(x, y, z)
+        
+        if (this.cpuXform) {
+          this._updateBoundingBoxCPU(x, y, z)
+        } else {
+          this._updateBoundingBox(x, y, z, this.gpuSkinning)
+        }
+        wi.SetBboxChanged()
+        this.updateBbox = false
+      }
+      
       // restore element array buffer
       this.renderer._gl.bindBuffer(this.renderer._gl.ELEMENT_ARRAY_BUFFER, this.renderer._indexBuffer)
     }
