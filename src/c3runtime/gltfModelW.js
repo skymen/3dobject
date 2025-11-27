@@ -1199,32 +1199,69 @@ class GltfModelWTop {
   // Bones are specifically the joints used for skeletal animation
   getBoneWorldPosition(boneName) {
     const vec3 = globalThis.glMatrix3D.vec3
+    const mat4 = globalThis.glMatrix3D.mat4
+    const quat = globalThis.glMatrix3D.quat
     const gltf = this.gltfData
     if (!gltf) return null
     
-    // Search in skinned nodes' joints
+    // Build a parent map for all nodes
+    const parentMap = new Map()
+    const buildParentMap = (nodes, parent) => {
+      if (!nodes) return
+      for (const node of nodes) {
+        if (parent) parentMap.set(node, parent)
+        if (node.children) buildParentMap(node.children, node)
+      }
+    }
+    if (gltf.scene && gltf.scene.nodes) {
+      buildParentMap(gltf.scene.nodes, null)
+    }
+
+    // Find the joint by name
+    let targetJoint = null
     if (gltf.skinnedNodes) {
       for (const skinnedNode of gltf.skinnedNodes) {
         if (!skinnedNode.skin || !skinnedNode.skin.joints) continue
-        
         for (const joint of skinnedNode.skin.joints) {
           if (joint.name === boneName) {
-            if (!joint.matrix) return null
-            
-            // Extract translation from joint matrix (columns 12, 13, 14)
-            const localPos = vec3.fromValues(joint.matrix[12], joint.matrix[13], joint.matrix[14])
-            
-            // Transform by the instance's modelRotate to get world position
-            const worldPos = vec3.create()
-            vec3.transformMat4(worldPos, localPos, this.modelRotate)
-            
-            return [worldPos[0], worldPos[1], worldPos[2]]
+            targetJoint = joint
+            break
           }
         }
+        if (targetJoint) break
       }
     }
+
+    if (!targetJoint) return null
+
+    // Build the path from root to joint
+    const path = []
+    let current = targetJoint
+    while (current) {
+      path.unshift(current)
+      current = parentMap.get(current)
+    }
+
+    // Calculate world matrix by multiplying transforms along the path
+    const worldMatrix = mat4.create()
+    mat4.identity(worldMatrix)
     
-    return null
+    for (const node of path) {
+      const localMatrix = mat4.create()
+      const translation = node.translation || [0, 0, 0]
+      const rotation = node.rotation || [0, 0, 0, 1]
+      const scale = node.scale || [1, 1, 1]
+      
+      mat4.fromRotationTranslationScale(localMatrix, rotation, translation, scale)
+      mat4.multiply(worldMatrix, worldMatrix, localMatrix)
+    }
+
+    // Extract world position and transform by modelRotate
+    const localPos = vec3.fromValues(worldMatrix[12], worldMatrix[13], worldMatrix[14])
+    const worldPos = vec3.create()
+    vec3.transformMat4(worldPos, localPos, this.modelRotate)
+
+    return [worldPos[0], worldPos[1], worldPos[2]]
   }
 
   // Get list of all bone/joint names
