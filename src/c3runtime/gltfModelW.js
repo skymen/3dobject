@@ -52,29 +52,35 @@ class GltfModelWTop {
       this.msgPort.onmessage = null
       this.msgPort.close()
     }
-    
+
     // Release boneBuffers in nodes
     if (this.gltfData && this.gltfData.nodes) {
       for (let i = 0; i < this.gltfData.nodes.length; i++) {
-        if (this.gltfData.nodes[i] && this.gltfData.nodes[i].boneBuffer && 
-            typeof this.gltfData.nodes[i].boneBuffer.release === 'function') {
+        if (
+          this.gltfData.nodes[i] &&
+          this.gltfData.nodes[i].boneBuffer &&
+          typeof this.gltfData.nodes[i].boneBuffer.release === "function"
+        ) {
           this.gltfData.nodes[i].boneBuffer.release()
           this.gltfData.nodes[i].boneBuffer = null
         }
       }
     }
-    
+
     // Release boneBuffers in skinned nodes
     if (this.gltfData && this.gltfData.skinnedNodes) {
       for (let i = 0; i < this.gltfData.skinnedNodes.length; i++) {
-        if (this.gltfData.skinnedNodes[i] && this.gltfData.skinnedNodes[i].boneBuffer && 
-            typeof this.gltfData.skinnedNodes[i].boneBuffer.release === 'function') {
+        if (
+          this.gltfData.skinnedNodes[i] &&
+          this.gltfData.skinnedNodes[i].boneBuffer &&
+          typeof this.gltfData.skinnedNodes[i].boneBuffer.release === "function"
+        ) {
           this.gltfData.skinnedNodes[i].boneBuffer.release()
           this.gltfData.skinnedNodes[i].boneBuffer = null
         }
       }
     }
-    
+
     this._runtime = null
     this._sdkType = null
     this.inst = null
@@ -181,8 +187,8 @@ class GltfModelWTop {
 
   copyGltfData(sourceGltf) {
     // Create completely new object (no direct references to source)
-    const targetGltf = structuredClone(sourceGltf);
-    return targetGltf;
+    const targetGltf = structuredClone(sourceGltf)
+    return targetGltf
   }
 
   async init() {
@@ -190,7 +196,7 @@ class GltfModelWTop {
     // For instance version, may only need points, others remain stable, full copy for now
     this._sdkType.gltfData.gltf.buffers = null
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
-    await new Promise(resolve => setTimeout(resolve, 66));  // Allow time for texture initialization
+    await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
     if ("buffers" in this.gltfData) {
       this.gltfData.buffers = null
     }
@@ -271,7 +277,7 @@ class GltfModelWTop {
             drawWeights: [],
             disabled: false,
             objectBuffers: [],
-            maxJointIndexUsed: -1
+            maxJointIndexUsed: -1,
           })
         }
         this.drawMeshes[this.drawMeshesIndex].node = node
@@ -307,16 +313,16 @@ class GltfModelWTop {
           drawNormals.push(new Float32Array(node.mesh.primitives[i].attributes.NORMAL.data))
         }
         if (gpuSkinning && drawJoints.length === 0 && "JOINTS_0" in node.mesh.primitives[i].attributes) {
-          const jointsData = new Uint16Array(node.mesh.primitives[i].attributes.JOINTS_0.data);
-          drawJoints.push(jointsData);
-           // Calculate maxJointIndexUsed
-          let maxIndex = -1;
+          const jointsData = new Uint16Array(node.mesh.primitives[i].attributes.JOINTS_0.data)
+          drawJoints.push(jointsData)
+          // Calculate maxJointIndexUsed
+          let maxIndex = -1
           for (let k = 0; k < jointsData.length; k++) {
             if (jointsData[k] > maxIndex) {
-              maxIndex = jointsData[k];
+              maxIndex = jointsData[k]
             }
           }
-          this.drawMeshes[this.drawMeshesIndex].maxJointIndexUsed = maxIndex;
+          this.drawMeshes[this.drawMeshesIndex].maxJointIndexUsed = maxIndex
         }
         if (gpuSkinning && drawWeights.length === 0 && "WEIGHTS_0" in node.mesh.primitives[i].attributes) {
           drawWeights.push(new Float32Array(node.mesh.primitives[i].attributes.WEIGHTS_0.data))
@@ -462,11 +468,11 @@ class GltfModelWTop {
     const gl = renderer._gl
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
-    
+
     this.locUModelRotate = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotate")
     this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
     this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-    
+
     gl.uniformMatrix4fv(this.locUModelRotate, false, modelRotate)
     gl.uniform1f(this.locUModelRotateEnable, 1)
     gl.uniform1f(this.locUPhongEnable, this.inst.fragLightPhong ? 1 : 0)
@@ -476,10 +482,10 @@ class GltfModelWTop {
     const gl = renderer._gl
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
-    
+
     this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
     this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-    
+
     gl.uniform1f(this.locUModelRotateEnable, 0)
     gl.uniform1f(this.locUPhongEnable, 0)
   }
@@ -487,10 +493,10 @@ class GltfModelWTop {
   _disableGPUSkinning(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
-    
+
     this.locUSkinEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uSkinEnable")
     this.locUNodeXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable")
-    
+
     gl.uniform1f(this.locUSkinEnable, 0.0)
     gl.uniform1f(this.locUNodeXformEnable, 0.0)
   }
@@ -498,12 +504,12 @@ class GltfModelWTop {
   _resetColorUniforms(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
-    
+
     // Reset color uniforms for subsequent non-3D objects
     const locUseUniformColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUseUniformColor")
     const locObjectColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uObjectColor")
     const locHasVertexColors = globalThis.uniformCache.getLocation(gl, shaderProgram, "uHasVertexColors")
-    
+
     if (locUseUniformColor) gl.uniform1f(locUseUniformColor, 0.0)
     if (locObjectColor) gl.uniform4f(locObjectColor, 1.0, 1.0, 1.0, 1.0)
     if (locHasVertexColors) gl.uniform1f(locHasVertexColors, 1.0) // Reset to C3 default (use vertex colors)
@@ -582,8 +588,8 @@ class GltfModelWTop {
       if (this.inst.fragLightPhong) {
         mat4.invert(this.normalMatrix, this.modelRotate)
         mat4.transpose(this.normalMatrix, this.normalMatrix)
-        const shaderProgram = renderer._batchState.currentShader._shaderProgram;
-        this.locUNormalMatrix = globalThis.uniformCache.getLocation(renderer._gl, shaderProgram, "uNormalMatrix");
+        const shaderProgram = renderer._batchState.currentShader._shaderProgram
+        this.locUNormalMatrix = globalThis.uniformCache.getLocation(renderer._gl, shaderProgram, "uNormalMatrix")
         if (this.locUNormalMatrix) {
           renderer._gl.uniformMatrix4fv(this.locUNormalMatrix, false, this.normalMatrix)
         }
@@ -684,20 +690,20 @@ class GltfModelWTop {
       if (this.inst.staticGeometry || this.inst.gpuSkinning) {
         const objectBuffers = this.drawMeshes[j].objectBuffers
         // Draw
-        const boneBuffer = this.drawMeshes[j]?.node?.boneBuffer;
+        const boneBuffer = this.drawMeshes[j]?.node?.boneBuffer
         for (let i = 0; i < objectBuffers.length; i++) {
           const nodeXform = boneBuffer?.nodeXform
           if (nodeXform) {
             objectBuffers[i].setNodeXform(nodeXform)
           }
           objectBuffers[i].draw(
-            renderer, 
+            renderer,
             boneBuffer, // This is the instanceBoneBuffer (BoneBufferW)
             this._sdkType.gltfData, // Pass the GltfData class instance
-            rotateMaterial, 
-            offsetMaterial, 
+            rotateMaterial,
+            offsetMaterial,
             this.inst.fragLightPhong,
-            currentColor  // Pass calculated color to draw method
+            currentColor // Pass calculated color to draw method
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
         }
@@ -903,13 +909,13 @@ class GltfModelWTop {
     let bufferViewIndex = 0
     // Unskinned nodes with mesh
     const bones = this.bones
-    const modelAssetBoneCount = this._sdkType.gltfData ? this._sdkType.gltfData.bonesPerModelAsset : 0;
+    const modelAssetBoneCount = this._sdkType.gltfData ? this._sdkType.gltfData.bonesPerModelAsset : 0
 
     for (let node of this.gltfData.nodes) {
       // Check if the node has a mesh and is not a skinned mesh
       if (node.mesh && !node.skin) {
         if (!node.hasOwnProperty("boneBuffer")) {
-          const actualBonesForThisNode = 0; // Non-skinned nodes don't use skinning bone arrays
+          const actualBonesForThisNode = 0 // Non-skinned nodes don't use skinning bone arrays
           const boneBuffer = new BoneBufferW(this.inst.renderer, actualBonesForThisNode, false)
           node.boneBuffer = boneBuffer
         }
@@ -932,7 +938,7 @@ class GltfModelWTop {
       // It seems to be a flat array of matrices.
       // bones.slice(start, start + length - MATRIX_SIZE) is for bone matrices
       // bones.slice(start + length - MATRIX_SIZE, start + length) is for rootNodeXform
-      skinnedNode.boneBuffer.setBones(bones.slice(start, start + length - MATRIX_SIZE)) 
+      skinnedNode.boneBuffer.setBones(bones.slice(start, start + length - MATRIX_SIZE))
       skinnedNode.boneBuffer.setRootNodeXform(bones.slice(start + length - MATRIX_SIZE, start + length))
       bufferViewIndex += 1
     }
@@ -1159,7 +1165,7 @@ class GltfModelWTop {
     const vec3 = globalThis.glMatrix3D.vec3
     const gltf = this.gltfData
     if (!gltf) return null
-    
+
     // Search in all nodes
     let node = null
     if (gltf.nodes) {
@@ -1170,7 +1176,7 @@ class GltfModelWTop {
         }
       }
     }
-    
+
     // Also check skinned nodes
     if (!node && gltf.skinnedNodes) {
       for (const n of gltf.skinnedNodes) {
@@ -1180,18 +1186,18 @@ class GltfModelWTop {
         }
       }
     }
-    
+
     if (!node || !node.matrix) {
       return null
     }
-    
+
     // Extract translation from the node's matrix (columns 12, 13, 14)
     const localPos = vec3.fromValues(node.matrix[12], node.matrix[13], node.matrix[14])
-    
+
     // Transform by the instance's modelRotate to get world position
     const worldPos = vec3.create()
     vec3.transformMat4(worldPos, localPos, this.modelRotate)
-    
+
     return [worldPos[0], worldPos[1], worldPos[2]]
   }
 
@@ -1203,7 +1209,7 @@ class GltfModelWTop {
     const quat = globalThis.glMatrix3D.quat
     const gltf = this.gltfData
     if (!gltf) return null
-    
+
     // Build a parent map for all nodes
     const parentMap = new Map()
     const buildParentMap = (nodes, parent) => {
@@ -1245,13 +1251,13 @@ class GltfModelWTop {
     // Calculate world matrix by multiplying transforms along the path
     const worldMatrix = mat4.create()
     mat4.identity(worldMatrix)
-    
+
     for (const node of path) {
       const localMatrix = mat4.create()
       const translation = node.translation || [0, 0, 0]
       const rotation = node.rotation || [0, 0, 0, 1]
       const scale = node.scale || [1, 1, 1]
-      
+
       mat4.fromRotationTranslationScale(localMatrix, rotation, translation, scale)
       mat4.multiply(worldMatrix, worldMatrix, localMatrix)
     }
@@ -1268,12 +1274,12 @@ class GltfModelWTop {
   getBoneNames() {
     const gltf = this.gltfData
     if (!gltf) return []
-    
+
     const names = []
     if (gltf.skinnedNodes) {
       for (const skinnedNode of gltf.skinnedNodes) {
         if (!skinnedNode.skin || !skinnedNode.skin.joints) continue
-        
+
         for (const joint of skinnedNode.skin.joints) {
           if (joint.name && !names.includes(joint.name)) {
             names.push(joint.name)
@@ -1281,7 +1287,7 @@ class GltfModelWTop {
         }
       }
     }
-    
+
     return names
   }
 
@@ -1289,7 +1295,7 @@ class GltfModelWTop {
   getNodeNames() {
     const gltf = this.gltfData
     if (!gltf) return []
-    
+
     const names = []
     if (gltf.nodes) {
       for (const node of gltf.nodes) {
@@ -1298,7 +1304,7 @@ class GltfModelWTop {
         }
       }
     }
-    
+
     return names
   }
 
@@ -1362,7 +1368,7 @@ class GltfModelWTop {
     this.workerReady = false
     this.updateAnimation(index, time, onScreen, deltaTime)
     this.inst.updateBbox = true
-    
+
     const animationBlend = this.inst.animationBlend
     const animationLoop = this.inst.animationLoop
     let animationData = { index, time, onScreen, deltaTime, animationBlend, animationLoop }
@@ -1406,13 +1412,27 @@ class GltfModelWTop {
     mat4.fromRotationTranslationScale(this.modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
   }
 
+  lerp(a, b, alpha) {
+    return a + alpha * (b - a)
+  }
+
   // Updates animation at index to be at time.  Is used to play animation.
+  // Also updates node transforms so getBoneWorldPosition works correctly.
   updateAnimation(index, time, onScreen, deltaTime) {
+    const vec3 = globalThis.glMatrix3D.vec3
+    const quat = globalThis.glMatrix3D.quat
     const gltf = this.gltfData
     let anim = gltf.animations[index]
+
     for (let i = 0; i < anim.channels.length; i++) {
       let c = anim.channels[i]
       let timeValues = c.sampler.input
+      let otherValues = c.sampler.output.data
+      let target = c.target
+
+      if (timeValues.max[0] == timeValues.min[0]) {
+        continue
+      }
 
       if (this.inst.animationLoop) {
         time = ((time - timeValues.min[0]) % (timeValues.max[0] - timeValues.min[0])) + timeValues.min[0] // loop
@@ -1430,6 +1450,51 @@ class GltfModelWTop {
         }
       }
       this.inst.currentAnimationTime = time
+
+      // Update node transforms for getBoneWorldPosition
+      timeValues = timeValues.data
+
+      // Find index in timeline
+      let t0, t1
+      for (t0 = 0, t1 = 1; t0 < timeValues.length - 1; t0++, t1++)
+        if (time >= timeValues[t0] && time <= timeValues[t1]) break
+
+      if (timeValues[t1] == null) continue
+
+      let t = (time - timeValues[t0]) / (timeValues[t1] - timeValues[t0])
+
+      if (target.path == "translation")
+        vec3.lerp(
+          target.node.translation,
+          otherValues.subarray(t0 * 3, t0 * 3 + 3),
+          otherValues.subarray(t1 * 3, t1 * 3 + 3),
+          t
+        )
+      else if (target.path == "rotation")
+        quat.slerp(
+          target.node.rotation,
+          otherValues.subarray(t0 * 4, t0 * 4 + 4),
+          otherValues.subarray(t1 * 4, t1 * 4 + 4),
+          t
+        )
+      else if (target.path == "scale")
+        vec3.lerp(
+          target.node.scale,
+          otherValues.subarray(t0 * 3, t0 * 3 + 3),
+          otherValues.subarray(t1 * 3, t1 * 3 + 3),
+          t
+        )
+      else if (target.path == "weights") {
+        const node = target.node
+        if (node.mesh && node.mesh.primitives && node.mesh.primitives[0] && node.mesh.primitives[0].targets) {
+          node.weights = new Float32Array(node.mesh.primitives[0].targets.length)
+          const weights = node.weights
+          const stride = weights.length
+          for (let j = 0; j < stride; j++) {
+            weights[j] = this.lerp(otherValues[t0 * stride + j], otherValues[t1 * stride + j], t)
+          }
+        }
+      }
     }
   }
 }

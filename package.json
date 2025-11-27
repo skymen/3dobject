@@ -1,9 +1,9 @@
 {
   "name": "3dobject",
-  "version": "2.86.0",
+  "version": "2.87.0",
   "description": "3dObject plugin for Construct 3",
   "main": "index.js",
-  "release": "2-86-0",
+  "release": "2-87-0",
   "directories": {
     "doc": "docs",
     "example": "examples"
