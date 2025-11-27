@@ -183,6 +183,27 @@
       // Return as JSON string for consistency with NodePointPosition
       return `{"x": ${worldPos[0]}, "y": ${worldPos[1]}, "z": ${worldPos[2]}}`
     },
+    NodeWorldPositionX(nodeName) {
+      if (this.gltf) {
+        const pos = this.gltf.getNodeWorldPosition(nodeName)
+        if (pos) return pos[0]
+      }
+      return 0
+    },
+    NodeWorldPositionY(nodeName) {
+      if (this.gltf) {
+        const pos = this.gltf.getNodeWorldPosition(nodeName)
+        if (pos) return pos[1]
+      }
+      return 0
+    },
+    NodeWorldPositionZ(nodeName) {
+      if (this.gltf) {
+        const pos = this.gltf.getNodeWorldPosition(nodeName)
+        if (pos) return pos[2]
+      }
+      return 0
+    },
     BoneWorldPosition(boneName) {
       let worldPos = [0, 0, 0]
       if (this.gltf) {
@@ -193,6 +214,27 @@
       }
       // Return as JSON string
       return `{"x": ${worldPos[0]}, "y": ${worldPos[1]}, "z": ${worldPos[2]}}`
+    },
+    BoneWorldPositionX(boneName) {
+      if (this.gltf) {
+        const pos = this.gltf.getBoneWorldPosition(boneName)
+        if (pos) return pos[0]
+      }
+      return 0
+    },
+    BoneWorldPositionY(boneName) {
+      if (this.gltf) {
+        const pos = this.gltf.getBoneWorldPosition(boneName)
+        if (pos) return pos[1]
+      }
+      return 0
+    },
+    BoneWorldPositionZ(boneName) {
+      if (this.gltf) {
+        const pos = this.gltf.getBoneWorldPosition(boneName)
+        if (pos) return pos[2]
+      }
+      return 0
     },
     BoneNames() {
       if (!this.gltf) return "[]"

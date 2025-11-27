@@ -13,10 +13,11 @@ class GltfModelWTop {
     this.inst = inst
     this.gltfData = {}
     this._blendState = "init"
-    this._lastTarget = []
+    this._lastTarget = [[], []]
     this._blendTarget = []
     this._blendTime = 0
     this._lastIndex = 0
+    this._lastTargetIndex = 0
     this.drawMeshes = []
     this.drawMeshesIndex = 0
     this.currentColor = [-1, -1, -1, -1]
@@ -1422,7 +1423,61 @@ class GltfModelWTop {
     const vec3 = globalThis.glMatrix3D.vec3
     const quat = globalThis.glMatrix3D.quat
     const gltf = this.gltfData
+    const animationBlend = this.inst.animationBlend
     let anim = gltf.animations[index]
+
+    // Blend state machine
+    switch (this._blendState) {
+      case "init":
+        if (animationBlend != 0 && this._lastIndex != index) {
+          this._blendState = "blend"
+          this._blendTime = 0
+          this._blendTarget = this._lastTarget[this._lastTargetIndex]
+          if (this._lastTargetIndex == 0) {
+            this._lastTargetIndex = 1
+          } else {
+            this._lastTargetIndex = 0
+          }
+          this._lastIndex = index
+        }
+        break
+      case "blend":
+        if (this._lastIndex != index) {
+          this._blendState = "blend"
+          this._blendTime = 0
+          this._blendTarget = this._lastTarget[this._lastTargetIndex]
+          if (this._lastTargetIndex == 0) {
+            this._lastTargetIndex = 1
+          } else {
+            this._lastTargetIndex = 0
+          }
+          this._lastIndex = index
+          break
+        }
+        if (this._blendTime > animationBlend) {
+          this._blendState = "idle"
+          break
+        }
+        this._blendTime += deltaTime
+        break
+      case "idle":
+        if (this._lastIndex != index) {
+          this._blendState = "blend"
+          this._blendTime = 0
+          this._blendTarget = this._lastTarget[this._lastTargetIndex]
+          if (this._lastTargetIndex == 0) {
+            this._lastTargetIndex = 1
+          } else {
+            this._lastTargetIndex = 0
+          }
+          this._lastIndex = index
+        }
+        break
+      default:
+        console.warn("[3DObject] bad blend state:", this._blendState)
+    }
+
+    this._lastTarget[this._lastTargetIndex] = []
 
     for (let i = 0; i < anim.channels.length; i++) {
       let c = anim.channels[i]
@@ -1494,6 +1549,37 @@ class GltfModelWTop {
             weights[j] = this.lerp(otherValues[t0 * stride + j], otherValues[t1 * stride + j], t)
           }
         }
+      }
+
+      // Blend to last animation if during blend
+      if (this._blendState == "blend") {
+        const blend = this._blendTime == 0 ? 0 : this._blendTime / animationBlend
+        const blendTarget = this._blendTarget[i]
+        if (blendTarget != null) {
+          if (target.path == "translation" && blendTarget.path == "translation")
+            vec3.lerp(target.node.translation, blendTarget.node.translation, target.node.translation, blend)
+          else if (target.path == "rotation" && blendTarget.path == "rotation")
+            quat.slerp(target.node.rotation, blendTarget.node.rotation, target.node.rotation, blend)
+          else if (target.path == "scale" && blendTarget.path == "scale")
+            vec3.lerp(target.node.scale, blendTarget.node.scale, target.node.scale, blend)
+        }
+      }
+
+      // Store for next blend
+      if (animationBlend != 0) {
+        const lastTarget = {}
+        lastTarget.node = {}
+        if (target.path == "translation") {
+          lastTarget.path = target.path
+          lastTarget.node.translation = vec3.clone(target.node.translation)
+        } else if (target.path == "rotation") {
+          lastTarget.path = target.path
+          lastTarget.node.rotation = quat.clone(target.node.rotation)
+        } else if (target.path == "scale") {
+          lastTarget.path = target.path
+          lastTarget.node.scale = vec3.clone(target.node.scale)
+        }
+        this._lastTarget[this._lastTargetIndex].push(lastTarget)
       }
     }
   }

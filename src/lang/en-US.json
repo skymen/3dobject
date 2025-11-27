@@ -1285,6 +1285,36 @@
               }
             }
           },
+          "node-world-position-x": {
+            "description": "Get the X component of a node's world position.",
+            "translated-name": "NodeWorldPositionX",
+            "params": {
+              "node-name": {
+                "name": "Node name",
+                "desc": "Name of the node to get X position from."
+              }
+            }
+          },
+          "node-world-position-y": {
+            "description": "Get the Y component of a node's world position.",
+            "translated-name": "NodeWorldPositionY",
+            "params": {
+              "node-name": {
+                "name": "Node name",
+                "desc": "Name of the node to get Y position from."
+              }
+            }
+          },
+          "node-world-position-z": {
+            "description": "Get the Z component of a node's world position.",
+            "translated-name": "NodeWorldPositionZ",
+            "params": {
+              "node-name": {
+                "name": "Node name",
+                "desc": "Name of the node to get Z position from."
+              }
+            }
+          },
           "bone-world-position": {
             "description": "Get world position of a bone/joint as JSON string {x, y, z}. For tracking skeletal animation bones.",
             "translated-name": "BoneWorldPosition",
@@ -1292,6 +1322,36 @@
               "bone-name": {
                 "name": "Bone name",
                 "desc": "Name of the bone/joint to get position from."
+              }
+            }
+          },
+          "bone-world-position-x": {
+            "description": "Get the X component of a bone's world position.",
+            "translated-name": "BoneWorldPositionX",
+            "params": {
+              "bone-name": {
+                "name": "Bone name",
+                "desc": "Name of the bone/joint to get X position from."
+              }
+            }
+          },
+          "bone-world-position-y": {
+            "description": "Get the Y component of a bone's world position.",
+            "translated-name": "BoneWorldPositionY",
+            "params": {
+              "bone-name": {
+                "name": "Bone name",
+                "desc": "Name of the bone/joint to get Y position from."
+              }
+            }
+          },
+          "bone-world-position-z": {
+            "description": "Get the Z component of a bone's world position.",
+            "translated-name": "BoneWorldPositionZ",
+            "params": {
+              "bone-name": {
+                "name": "Bone name",
+                "desc": "Name of the bone/joint to get Z position from."
               }
             }
           },

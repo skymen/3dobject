@@ -742,10 +742,94 @@
         ]
       },
       {
+        "id": "node-world-position-x",
+        "scriptName": "NodeWorldPositionX",
+        "expressionName": "NodeWorldPositionX",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "node-world-position-y",
+        "scriptName": "NodeWorldPositionY",
+        "expressionName": "NodeWorldPositionY",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "node-world-position-z",
+        "scriptName": "NodeWorldPositionZ",
+        "expressionName": "NodeWorldPositionZ",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "node-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
         "id": "bone-world-position",
         "scriptName": "BoneWorldPosition",
         "expressionName": "BoneWorldPosition",
         "returnType": "string",
+        "highlight": false,
+        "params": [
+          {
+            "id": "bone-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "bone-world-position-x",
+        "scriptName": "BoneWorldPositionX",
+        "expressionName": "BoneWorldPositionX",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "bone-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "bone-world-position-y",
+        "scriptName": "BoneWorldPositionY",
+        "expressionName": "BoneWorldPositionY",
+        "returnType": "number",
+        "highlight": false,
+        "params": [
+          {
+            "id": "bone-name",
+            "type": "string",
+            "initialValue": ""
+          }
+        ]
+      },
+      {
+        "id": "bone-world-position-z",
+        "scriptName": "BoneWorldPositionZ",
+        "expressionName": "BoneWorldPositionZ",
+        "returnType": "number",
         "highlight": false,
         "params": [
           {
