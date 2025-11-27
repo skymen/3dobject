@@ -817,6 +817,7 @@
       // @ts-ignore
       map.set(this, self.IInstance._GetInitInst().GetSdkInstance())
       // @ts-ignore
+      this.sdk_instance = map.get(this)
     }
 
     setCannonBody(body, setRotaion = true) {

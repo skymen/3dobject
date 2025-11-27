@@ -3,7 +3,7 @@
   const SDK = self.SDK
 
   const PLUGIN_ID = "Mikal_3DObject"
-  const PLUGIN_VERSION = "2.88.0"
+  const PLUGIN_VERSION = "2.89.0"
   const PLUGIN_CATEGORY = "3d"
 
   const PLUGIN_CLASS = (SDK.Plugins.Mikal_3DObject = class Object3DPlugin extends SDK.IPluginBase {
@@ -24,7 +24,7 @@
       this._info.SetHasImage(true)
       this._info.SetSupportsEffects(true) // allow effects
       this._info.SetMustPreDraw(false)
-      this._info.SetCanBeBundled(false)
+      this._info.SetCanBeBundled(true)
       this._info.SetIs3D(true)
       this._info.SetSupportsColor(true)
       this._info.AddCommonPositionACEs()
