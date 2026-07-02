@@ -365,7 +365,7 @@ function updateAnimationPolygons(data) {
   if (animationData.onScreen) {
     drawVerts[drawVerts.length - 1] = editorData.tick
     setBBInVerts(drawVerts, minBB, maxBB)
-    if (lightEnable && lightUpdate) updateLight(editorData)
+    if (lightEnable && lightUpdate && !gpuSkinning) updateLight(editorData)
     if (gpuSkinning) {
       // XXX Don't need to pass back buff
       let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
@@ -412,7 +412,7 @@ function getPolygons(data) {
   // Last float in array will be tick that requested the update
   drawVerts[drawVerts.length - 1] = editorData.tick
   setBBInVerts(drawVerts, minBB, maxBB)
-  if (lightEnable && lightUpdate) updateLight(editorData)
+  if (lightEnable && lightUpdate && !gpuSkinning) updateLight(editorData)
   if (gpuSkinning) {
     let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
     msgPort.postMessage(msg, [msg.buffBones, msg.buff])
@@ -708,7 +708,10 @@ function getPolygonsPrep(editorData) {
 
   for (let ii = 0; ii < gltf.skinnedNodes.length; ii++) {
     let node = gltf.skinnedNodes[ii]
-    node.rotation = rotationQuat
+    // Force skinned mesh node rotation to identity (skinning provides the pose).
+    // Must be a per-node array: aliasing a shared scratch quat here would leak
+    // rotation state across instance records in shared-worker mode.
+    node.rotation = [0, 0, 0, 1]
 
     //update bone matrixes
     for (let jj = 0; jj < node.skin.joints.length; jj++) {
