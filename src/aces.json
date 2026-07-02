@@ -3,25 +3,6 @@
     "conditions": [],
     "actions": [
       {
-        "id": "rotate",
-        "scriptName": "Rotate",
-        "highlight": false,
-        "isDeprecated": true,
-        "params": [
-          {
-            "id": "angle",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "axis",
-            "type": "combo",
-            "initialValue": "X",
-            "items": ["X", "Y", "Z"]
-          }
-        ]
-      },
-      {
         "id": "set-z-elevation-0",
         "scriptName": "SetZElevation0",
         "highlight": false,
@@ -103,7 +84,14 @@
             "id": "rotation-order",
             "type": "combo",
             "initialValue": "zxy",
-            "items": ["xyz", "xzy", "yxz", "yzx", "zxy", "zyx"]
+            "items": [
+              "xyz",
+              "xzy",
+              "yxz",
+              "yzx",
+              "zxy",
+              "zyx"
+            ]
           }
         ]
       },
@@ -481,44 +469,6 @@
         ]
       },
       {
-        "id": "set-camera-vector-pos",
-        "scriptName": "SetCameraVectorPos",
-        "highlight": false,
-        "isDeprecated": false,
-        "params": [
-          {
-            "id": "x",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "y",
-            "type": "number",
-            "initialValue": "1"
-          },
-          {
-            "id": "z",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "x-pos",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "y-pos",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "z-pos",
-            "type": "number",
-            "initialValue": "0"
-          }
-        ]
-      },
-      {
         "id": "load-model-from-template",
         "scriptName": "LoadModelFromTemplate",
         "highlight": false,
@@ -527,31 +477,6 @@
             "id": "template-uid",
             "type": "number",
             "initialValue": 0
-          }
-        ]
-      },
-      {
-        "id": "set-blend-mode",
-        "scriptName": "SetBlendMode",
-        "highlight": false,
-        "isDeprecated": true,
-        "params": [
-          {
-            "id": "blend-mode",
-            "type": "combo",
-            "initialValue": "normal",
-            "items": [
-              "normal",
-              "additive",
-              "copy",
-              "destination-over",
-              "source-in",
-              "destination-in",
-              "source-out",
-              "destination-out",
-              "source-atop",
-              "destination-atop"
-            ]
           }
         ]
       },
@@ -1122,29 +1047,6 @@
   "lighting": {
     "conditions": [],
     "actions": [
-      {
-        "id": "set-light-dir",
-        "scriptName": "SetLightDir",
-        "highlight": false,
-        "isDeprecated": true,
-        "params": [
-          {
-            "id": "x",
-            "type": "number",
-            "initialValue": 0
-          },
-          {
-            "id": "y",
-            "type": "number",
-            "initialValue": 0
-          },
-          {
-            "id": "z",
-            "type": "number",
-            "initialValue": 0
-          }
-        ]
-      },
       {
         "id": "enable-frag-light",
         "scriptName": "EnableFragLight",

@@ -20,14 +20,6 @@ class UniformLocationCacheClass {
     return location
   }
 
-  getLocations(gl, shaderProgram, uniformNames) {
-    const locations = {}
-    for (const name of uniformNames) {
-      locations[name] = this.getLocation(gl, shaderProgram, name)
-    }
-    return locations
-  }
-
   clearProgram(shaderProgram) {
     this.cache.delete(shaderProgram)
   }

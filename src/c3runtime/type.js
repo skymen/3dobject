@@ -102,9 +102,6 @@
             }
 
             gltfData.dynamicTexturesLoaded = true;
-            if (instanceModel) {
-                gltfData = null
-            }
         }
 
         async _uploadCachedTextures(renderer, entry)

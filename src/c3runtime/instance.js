@@ -12,9 +12,6 @@
       this.uid = this.GetInstance().GetUID()
       this.loaded = false
       this.animationTime = 0
-      this.drawVerts = []
-      this.drawUVs = []
-      this.drawIndices = []
       this.animationIndex = 0
       this.animationSpeed = 1
       this.animationLastTime = 0
@@ -30,8 +27,6 @@
       this.renderOnce = false
       this.currentAnimationTime = 0
       this.currentAnimationFrame = 0
-      this.drawVertsCache = []
-      this.drawUVsCache = []
       this.minBB = [0, 0, 0]
       this.maxBB = [0, 0, 0]
       this.updateBbox = true
@@ -39,12 +34,10 @@
       this.instanceModel = false
       this.texture = {}
       this.dataLoaded = false
-      this.drawMeshes = []
       this.whiteTexture = null
       this.instanceTexture = false
       this.wi = this.GetWorldInfo()
       this.cannonBody = null
-      this.quaternion = null
       this.cannonSetRotation = false
       this.xMinBB = [0, 0, 0]
       this.xMaxBB = [0, 0, 0]
@@ -57,7 +50,6 @@
       this.lightDir = [0, 0, 0]
       this.lightEnable = false
       this.lightUpdate = false
-      this.lightColor = 0
       this.spotEnable = false
       this.spotDir = [0, 0, 0]
       this.spotCutoff = 0
@@ -70,7 +62,6 @@
       this.totalTriangles = 0
       this.totalTrianglesCulled = 0
       this.vertexScale = 0
-      this.blendMode = 0
       this.quaternion = [0, 0, 0, 1]
       this.enableQuaternion = false
       this.spriteTextures = new Map()
@@ -78,8 +69,6 @@
       this.fragLightPhong = false
       this.staticGeometry = false
       this.gpuSkinning = false
-      this.cameraVector = [0, 1, 0]
-      this.cameraPosition = [0, 0, 0]
       this.animationOffset = 0
       this.allNodesDisabled = false
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
@@ -170,9 +159,6 @@
       }
 
       this.loaded = true
-      this.drawVerts = []
-      this.drawUVs = []
-      this.drawIndices = []
       this.renderOnce = true
       this.runtime.UpdateRender()
       if (this.gltf.getAnimationNames().length > 0) {
@@ -239,9 +225,6 @@
           const deltaTime = this.animationTime - this.animationLastTime
           if (deltaTime >= 1 / this.animationRate) {
             this.animationLastTime = this.animationTime
-            this.drawVerts = []
-            this.drawUVs = []
-            this.drawIndices = []
             this.gltf.updateAnimationPolygons(
               this.animationIndex,
               this.animationTime,
@@ -255,9 +238,6 @@
           // } else if (this.renderOnce || (this.workerAnimation))
         } else if (this.renderOnce || this.lightEnable) {
           this.renderOnce = false
-          this.drawVerts = []
-          this.drawUVs = []
-          this.drawIndices = []
           this.gltf.getPolygons(this.staticGeometry || this.gpuSkinning)
           this.runtime.UpdateRender()
           this.updateBbox = true
@@ -328,7 +308,7 @@
       let gltfData = this.instanceModel ? this.gltfData : this.sdkType.gltfData
 
       if (!gltfData) {
-        // Source destoryed, destroy this instance
+        // Source destroyed, destroy this instance
         this.runtime.DestroyInstance(this.GetInstance())
         return
       }
@@ -548,9 +528,6 @@
       this.uid = null
       this.loaded = null
       this.animationTime = null
-      this.drawVerts = null
-      this.drawUVs = null
-      this.drawIndices = null
       this.animationIndex = null
       this.animationSpeed = null
       this.animationLastTime = null
@@ -566,8 +543,6 @@
       this.renderOnce = null
       this.currentAnimationTime = null
       this.currentAnimationFrame = null
-      this.drawVertsCache = null
-      this.drawUVsCache = null
       this.minBB = null
       this.maxBB = null
       this.updateBbox = null
@@ -575,13 +550,10 @@
       this.instanceModel = null
       this.texture = null
       this.dataLoaded = null
-      this.drawMeshes = null
       this.whiteTexture = null
       this.cannonBody = null
       this.cannonSetRotation = null
       this.bboxScale = null
-      this.maxBB = null
-      this.minBB = null
       this.wireframe = null
       this.workerAnimation = null
       this.xWireframeWidth = null
@@ -590,7 +562,6 @@
       this.materialsModify = null
       this.gltf = null
       this.lightEnable = null
-      this.lightColor = null
       this.spotEnable = null
       this.spotDir = null
       this.spotCutoff = null

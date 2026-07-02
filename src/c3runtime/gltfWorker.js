@@ -3,7 +3,6 @@
 
 // The MessagePort for communicating with the runtime
 let msgPort = null
-let id = Math.random()
 let buff = null
 let buffBones = null
 let buffLights = null
@@ -22,7 +21,6 @@ let nodeMorphWeights = new Map()
 let activeNodes = []
 let nodeIndex = 0
 let bonesIndex = 0
-let nodeMatsIndex = 0
 let drawMeshes = null
 // Whether vertex attribute data (positions/weights/joints/morph targets) is present.
 // GPU-skinning instances send length stubs instead; real data arrives on demand
@@ -324,8 +322,6 @@ function release() {
   // @ts-ignore
   bonesIndex = null
   // @ts-ignore
-  nodeMatsIndex = null
-  // @ts-ignore
   drawMeshes = null
 }
 
@@ -341,13 +337,7 @@ let lastTargetIndex = 0
 let blendTarget = []
 let blendTime = 0
 let lastIndex = 0
-let animationFinished = false
-let currentAnimationFrame = 0
 
-function smoothstep(min, max, value) {
-  var x = Math.max(0, Math.min(1, (value - min) / (max - min)))
-  return x * x * (3 - 2 * x)
-}
 
 function updateAnimationPolygons(data) {
   const animationData = data.animationData
@@ -528,9 +518,6 @@ function updateAnimation(animationData) {
     } else {
       if (time > timeValues.max[0]) {
         time = timeValues.max[0] - 0.01 // Stop on max time
-        if (animationFinished) {
-          animationFinished = true
-        }
       }
     }
 
@@ -545,11 +532,9 @@ function updateAnimation(animationData) {
     for (t0 = 0, t1 = 1; t0 < timeValues.length - 1; t0++, t1++)
       if (time >= timeValues[t0] && time <= timeValues[t1]) break
 
-    currentAnimationFrame = t0
 
     let t = (time - timeValues[t0]) / (timeValues[t1] - timeValues[t0])
 
-    currentAnimationFrame = Math.round(t0 + t)
 
     // Check if invalid state, if so, skip animation
     // TODO: Change how change animation vs tick is handled to make sure this case does not happen
@@ -656,7 +641,6 @@ function getPolygonsPrep(editorData) {
   // drawVerts index
   index = 0
   bonesIndex = 0
-  nodeMatsIndex = 0
   const isEditor = editorData.isEditor
   activeNodes = []
   nodeIndex = 0

@@ -19,7 +19,8 @@ class ObjectBufferTop {
     }
     texcoordData = mesh.drawUVs[primitiveIndex]
     if (!texcoordData || texcoordData.length == 0) {
-      texcoordData = this.createDefaultTexcoordData(vertexData.length)
+      // Texcoords are 2 floats per vertex (positions are 3)
+      texcoordData = this.createDefaultTexcoordData((vertexData.length / 3) * 2)
     }
     indexData = mesh.drawIndices[primitiveIndex]
     colorData = mesh.drawColors[primitiveIndex]
@@ -61,8 +62,6 @@ class ObjectBufferTop {
     gl.bufferData(gl.ARRAY_BUFFER, this.vertexData, gl.STATIC_DRAW)
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.texcoordBuffer)
-    if (!this.texcoordData || this.texcoordData.length == 0) {
-    }
     gl.bufferData(gl.ARRAY_BUFFER, this.texcoordData, gl.STATIC_DRAW)
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer)
@@ -108,17 +107,6 @@ class ObjectBufferTop {
     renderer._texPtr = 0
     renderer._pointPtr = 0
     renderer._topOfBatch = 0
-  }
-
-  _updateShader(shaderProgram) {
-    if (this.boundProgram === shaderProgram) return;
-
-    this.boundProgram = shaderProgram;
-    const gl = this.gl;
-    this.locURotateMatrix = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVRotate");
-    this.locURotateCenter = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVRotateCenter");
-    this.locUOffsetUV = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVOffset");
-    this.locUVXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVXformEnable");
   }
 
   createVao(renderer) {

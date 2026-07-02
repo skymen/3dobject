@@ -27,10 +27,7 @@ class GltfModelTop {
     this.nodeMeshMap = {}
     this.modelRotate = mat4.create()
     this.normalMatrix = mat4.create()
-    this.locANormalMatrix = null
     this.meshNames = new Map()
-    this.viewPos = [0, 0, 0]
-    this.boundProgram = null
     this.released = false
   }
 
@@ -94,36 +91,6 @@ class GltfModelTop {
     this.normalMatrix = null
     // @ts-ignore
     this.meshNames = null
-    // @ts-ignore
-    this.verts = null
-    // @ts-ignore
-    this.bones = null
-    // @ts-ignore
-    this.updateDrawVerts = null
-    // @ts-ignore
-    this.activeNodes = null
-    // @ts-ignore
-    this.drawLights = null
-    // @ts-ignore
-    this.drawLightsBufferViews = null
-    // @ts-ignore
-    this.drawLightsEnable = null
-    // @ts-ignore
-    this.workerReady = null
-    // @ts-ignore
-    this.boundingBoxInit = null
-    // @ts-ignore
-    this.buffBones = null
-    // @ts-ignore
-    this.buffNodesMat = null
-    // @ts-ignore
-    this.nodesMat = null
-    // @ts-ignore
-    this.buffLights = null
-    // @ts-ignore
-    this.boneBufferViews = null
-    // @ts-ignore
-    this.msgPort = null
   }
 
   copyGltfData(sourceGltf) {
@@ -734,11 +701,6 @@ class GltfModelTop {
     const gltf = this.gltfData
     let dummyMat4Out = mat4.create()
 
-    const scale = this.inst.scale
-    const xScale = this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)
-    const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
-    const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
-
     if (parentMat != undefined) mat4.copy(node.matrix, parentMat)
     // mat4.set(parentMat, node.matrix);
     else mat4.identity(node.matrix)
@@ -769,7 +731,6 @@ class GltfModelTop {
 
       for (let i = 0; i < node.mesh.primitives.length; i++) {
         let posData = node.mesh.primitives[i].attributes.POSITION.data
-        const weights = node.mesh.weights
 
         let morphActive = false
         let morphTargets = null

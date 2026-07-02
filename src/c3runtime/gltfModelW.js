@@ -80,7 +80,6 @@ class GltfModelWTop {
     this.nodeMeshMap = {}
     this.modelRotate = mat4.create()
     this.normalMatrix = mat4.create()
-    this.locANormalMatrix = null
     this.meshNames = new Map()
     this.msgPort = null
     this.arrayBufferIndex = 0
@@ -173,8 +172,6 @@ class GltfModelWTop {
     this.drawMeshes = null
     // @ts-ignore
     this.drawMeshesIndex = null
-    // @ts-ignore
-    this.drawMeshesMin = null
     // @ts-ignore
     this.currentColor = null
     // @ts-ignore
@@ -278,7 +275,6 @@ class GltfModelWTop {
     }
     // Create dedicdated web worker for skinned mesh animation
     this.initDrawMeshes()
-    this.drawMeshesMin = this.drawMeshes
     this.createBoneBufferViews()
     await this.createWorker(this._runtime)
     if (this.released) return
@@ -685,41 +681,6 @@ class GltfModelWTop {
     minBBox[0] = verts[l--]
   }
 
-  _ExtendQuadsBatch(renderer, numQuads) {
-    let v = renderer._vertexPtr
-    if (v + numQuads * 4 * 3 > renderer._lastVertexPtr) {
-      renderer.EndBatch()
-      v = 0
-    }
-    const totalIndices = numQuads * 6 // Each quad requires 6 indices (two tris)
-    if (renderer._topOfBatch === 1) {
-      renderer._batch[renderer._batchPtr - 1]._indexCount += totalIndices
-    } else {
-      const b = renderer.PushBatch()
-      b.InitQuad(v, totalIndices)
-      renderer._topOfBatch = 1
-    }
-  }
-
-  _cullPoint(cameraPos, cameraDir, point) {
-    const vec3 = globalThis.glMatrix3D.vec3
-    const vec4 = globalThis.glMatrix3D.vec4
-    const mat4 = globalThis.glMatrix3D.mat4
-    const quat = globalThis.glMatrix3D.quat
-    // Find angle between vector of camera pos to point and camera dir
-    // Create a new vector for the result of the subtraction
-    let direction = vec3.create()
-    vec3.subtract(direction, point, cameraPos) // Subtract cameraPos from point, store in direction
-
-    // Calculate the angle between cameraDir and the new direction vector
-    const angle = vec3.angle(cameraDir, direction)
-    if (angle > 90) return false
-    // Find distance from camera pos to point
-    const distance = vec3.distance(cameraPos, point)
-    if (distance > 1000) return false
-    return true
-  }
-
   setVertexShaderModelRotate(renderer, modelRotate) {
     const gl = renderer._gl
     const batchState = renderer._batchState
@@ -814,7 +775,6 @@ class GltfModelWTop {
     const finalColor = vec4.create()
 
     const tmpModelView = mat4.create()
-    const tmpProjection = mat4.create()
     const modelRotate = mat4.create()
     if (!(this.inst.isEditor || this.inst.cpuXform)) {
       mat4.copy(tmpModelView, renderer._matMV)

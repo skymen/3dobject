@@ -411,7 +411,6 @@ class GltfData {
       })
     }
 
-    // ⚠️ EDITOR BYPASS: Check if we're in editor environment
     const isEditorEnvironment = !isRuntime
     
     // Check for Draco in extensions
@@ -419,12 +418,7 @@ class GltfData {
     if (gltf.extensionsUsed && gltf.extensionsUsed.includes('KHR_draco_mesh_compression')) {
       hasDracoCompression = true
       if (debug) {
-        if (isEditorEnvironment) {
-          console.warn('⚠️ EDITOR MODE: Draco compression detected but will be bypassed in editor environment to prevent crashes')
-          console.warn('⚠️ Draco models will display correctly in preview/runtime')
-        } else {
-          console.log('🔥 GLTF file declares Draco compression in extensionsUsed')
-        }
+        console.log('GLTF file declares Draco compression in extensionsUsed')
       }
     } else if (debug) {
       console.log('📄 GLTF file does not declare Draco compression in extensionsUsed')
@@ -702,77 +696,15 @@ class GltfData {
   }
 
   _calculateBonesPerModelAsset() {
-    if (!this.gltf || !this.gltf.skins) {
-      this.bonesPerModelAsset = 0;
-      return;
-    }
-    let maxJointIndex = -1;
-    for (const skin of this.gltf.skins) {
-      for (const jointNode of skin.joints) {
-        // Assuming jointNode objects are the actual node objects after parsing
-        // and gltf.nodes is an array of all nodes.
-        // We need the index of the jointNode in the overall gltf.nodes list if joint indices are global.
-        // However, glTF skin.joints usually contains indices into gltf.nodes.
-        // The actual joint index for skinning often comes from JOINTS_0 attribute.
-        // For UBO sizing, we are interested in the highest joint index referenced by any skin.
-        // Let's assume skin.joints are direct references to node objects and their 'originalIndex' or similar holds the key.
-        // More robustly: iterate through accessors for JOINTS_0 and find max value if available.
-        // For now, using skin.joints directly assuming they contain relevant indices or can be mapped.
-
-        // Simpler approach: rely on inverseBindMatrices accessor related to the skin.
-        // The number of inverseBindMatrices is the number of joints for that skin.
-        // Or, if 'skeleton' root implies a set of joints, that's another way.
-        // The most direct way from spec: "The number of joints is given by the count property of the accessor referenced by inverseBindMatrices."
-        if (skin.inverseBindMatrices && skin.inverseBindMatrices.count) {
-            // A skin defines a set of joints. The UBO for this model must accommodate the largest such set if skins are independent
-            // OR if joints are shared, the max index used across all skins.
-            // Let's assume for now that we need enough space for any single skin's joint set if they are drawn independently.
-            // Or, more likely, joint indices in JOINTS_0 are global for the model.
-            // The crucial part is that 'bonesPerModelAsset' should be the size of the bone array for the shader.
-            // This is typically max_joint_index_in_attributes + 1.
-            // This requires checking all mesh primitives using this skin.
-            // For now, let's assume gltf.accessors[skin.inverseBindMatrices].count is a good proxy for a single skin.
-            // A more accurate calculation would iterate all skinned meshes, check JOINTS_0 attributes, find max index.
-        }
-      }
-    }
-
-    // A common way to define skeleton size is by the number of entries in the IBM accessor for the most complex skin
-    // or the total number of nodes that are joints if there's a global joint list for the model.
-    // For simplicity, let's find the skin with the most joints based on its IBM.
-    const skins = this.gltf.skins
-    if (skins.length > 0) {
-        for (const skin of skins) {
-            if (skin.inverseBindMatrices && skin.inverseBindMatrices.data) {
-                 // skin.inverseBindMatrices.data is a Float32Array of size N*16 for N joints.
-                const jointCountForThisSkin = skin.inverseBindMatrices.data.length / 16;
-                if (jointCountForThisSkin > maxJointIndex) {
-                    // This isn't maxJointIndex, it's maxJoint *Count* for a skin.
-                    // We need the max *index value* from JOINTS_0 attributes across all meshes.
-                    // This calculation is complex here. For now, placeholder.
-                }
-            }
-        }
-    }
-    
-    // Placeholder: This needs to be correctly calculated by inspecting all JOINTS_0 attributes of meshes.
-    // For now, if there are skins, assume a default or parse from a custom property if available.
-    // A robust solution needs to iterate mesh primitive attributes.
-    // Let's find it from existing objectBuffer: mesh.maxJointIndexUsed
+    // The shader UBO holds SHADER_MAX_BONES matrices; the bone count for this model
+    // is the highest joint index referenced by any JOINTS_0 attribute, plus one.
     let modelMaxJointIndex = -1;
-    if (this.gltf.meshes) {
-        for(const mesh of this.gltf.meshes) {
-            // Placeholder for where maxJointIndexUsed might be stored after processing all its primitives
-            // This property isn't standard in gltf.meshes, it would be calculated and stored during initial processing.
-            // For now, we'll defer this calculation until we know how maxJointIndexUsed per mesh is populated.
-            // If each mesh primitive already calculates its maxJointIndexUsed (as in ObjectBuffer), we can aggregate it here.
-            
-            // Iterate primitives to find the true max index from JOINTS_0 accessors
+    if (this.gltf && this.gltf.meshes) {
+        for (const mesh of this.gltf.meshes) {
             for (const primitive of mesh.primitives) {
                 if (primitive.attributes.JOINTS_0) {
-                    const jointAccessor = primitive.attributes.JOINTS_0;
-                    const jointData = jointAccessor.data; // This is Uint16Array or Uint8Array
-                    for (let k=0; k < jointData.length; k++) {
+                    const jointData = primitive.attributes.JOINTS_0.data;
+                    for (let k = 0; k < jointData.length; k++) {
                         if (jointData[k] > modelMaxJointIndex) {
                             modelMaxJointIndex = jointData[k];
                         }
@@ -784,9 +716,8 @@ class GltfData {
 
     if (modelMaxJointIndex > -1) {
         this.bonesPerModelAsset = modelMaxJointIndex + 1;
-    } else if (this.gltf.skins && this.gltf.skins.length > 0) {
-        // Fallback if JOINTS_0 isn't found or empty, use IBM count of largest skin
-        // This is less accurate for UBO sizing if joint indices are sparse.
+    } else if (this.gltf && this.gltf.skins && this.gltf.skins.length > 0) {
+        // Fallback: inverse-bind-matrix count of the largest skin
         let maxSkinJoints = 0;
         for (const skin of this.gltf.skins) {
             if (skin.inverseBindMatrices && skin.inverseBindMatrices.data) {
@@ -801,8 +732,16 @@ class GltfData {
         this.bonesPerModelAsset = 0; // No skins, no bones needed for skinning UBO
     }
 
+    if (this.bonesPerModelAsset > SHADER_MAX_BONES) {
+        console.error(
+            "[3DObject] Model uses " + this.bonesPerModelAsset + " joints but the shader supports " +
+            SHADER_MAX_BONES + "; skinning will be truncated."
+        );
+        this.bonesPerModelAsset = SHADER_MAX_BONES;
+    }
+
     if (this.bonesPerModelAsset > 0 && this._debug) {
-        console.log(`Calculated bonesPerModelAsset: ${this.bonesPerModelAsset} for ${this.gltf?.asset?.extras?.originalFileName || 'Unknown Model'}`);
+        console.log(`Calculated bonesPerModelAsset: ${this.bonesPerModelAsset}`);
     }
   }
 
@@ -1273,205 +1212,6 @@ class GltfData {
       }
     }
     
-    return true
-  }
-
-  // 🎯 EDITOR BYPASS: Process all primitives as standard GLTF (ignore Draco extensions)
-  async _processStandardPrimitivesOnly(gltf) {
-    if (this._debug) console.warn('🚨 EDITOR BYPASS: Processing all primitives as standard GLTF, ignoring Draco extensions')
-    
-    // First, process ALL accessors (no Draco bypass)
-    if (this._debug) console.log(`[EDITOR BYPASS] Processing ${gltf.accessors.length} accessors`)
-    
-    for (let i = 0; i < gltf.accessors.length; i++) {
-      let a = gltf.accessors[i]
-      
-      let buftype = null
-      switch (a.componentType) {
-        case 5120:
-          buftype = Int8Array
-          break
-        case 5121:
-          buftype = Uint8Array
-          break
-        case 5122:
-          buftype = Int16Array
-          break
-        case 5123:
-          buftype = Uint16Array
-          break
-        case 5125:
-          buftype = Uint32Array
-          break
-        case 5126:
-          buftype = Float32Array
-          break
-        default:
-          if (this._debug) console.error("error: gltf, unhandled componentType: " + a.componentType + " for accessor " + i);
-          return false;
-      }
-      let compcount = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 }[a.type]
-      
-      // Handle sparse accessors (copied from _processAccessors)
-      if (a.sparse) {
-        if (a.bufferView === undefined || a.bufferView === null) {
-          a.data = new buftype(compcount * a.count);
-        } else {
-          let bufview = bufferViews[a.bufferView];
-          if (!bufview) {
-            if (this._debug) console.error("error: gltf, missing bufferView for base accessor data in sparse accessor");
-            return false;
-          }
-          const byteOffset = (bufview.byteOffset || 0) + (a.byteOffset || 0);
-          const elementSize = buftype.BYTES_PER_ELEMENT;
-          const length = compcount * a.count;
-          a.data = new buftype(gltf.buffers[bufview.buffer], byteOffset, length);
-        }
-
-        const sparse = a.sparse;
-        const indicesBufferView = bufferViews[sparse.indices.bufferView];
-        const valuesBufferView = bufferViews[sparse.values.bufferView];
-        
-        let indicesComponentType = sparse.indices.componentType;
-        let indicesType = null;
-        switch (indicesComponentType) {
-          case 5121: indicesType = Uint8Array; break;
-          case 5123: indicesType = Uint16Array; break;
-          case 5125: indicesType = Uint32Array; break;
-          default: if (this._debug) console.error("Unsupported sparse indices componentType: " + indicesComponentType + " for accessor " + i); return false;
-        }
-
-        if (!indicesType) {
-            if (this._debug) console.error("Critical error: indicesType is null after switch, should not happen. Accessor " + i);
-            return false;
-        }
-        
-        const indicesByteOffset = (indicesBufferView.byteOffset || 0) + (sparse.indices.byteOffset || 0);
-        const indicesLength = sparse.count;
-        const indices = new indicesType(
-          buffers[indicesBufferView.buffer],
-          indicesByteOffset,
-          indicesLength
-        );
-
-        const valuesByteOffset = (valuesBufferView.byteOffset || 0) + (sparse.values.byteOffset || 0);
-        const valuesLength = sparse.count * compcount;
-        const values = new buftype(
-          buffers[valuesBufferView.buffer],
-          valuesByteOffset,
-          valuesLength
-        );
-
-        for (let j = 0; j < sparse.count; j++) {
-          const targetIndex = indices[j];
-          for (let k = 0; k < compcount; k++) {
-            a.data[targetIndex * compcount + k] = values[j * compcount + k];
-          }
-        }
-        
-        continue;
-      }
-
-      // Check if bufferView exists
-      if (a.bufferView === undefined || a.bufferView === null) {
-        if (this._debug) console.warn(`⚠️ [EDITOR BYPASS] Accessor ${i} has no bufferView, skipping`)
-        continue;
-      }
-
-      let bufview = bufferViews[a.bufferView];
-      if (!bufview) {
-        if (this._debug) console.error(`[EDITOR BYPASS ERROR] BufferView ${a.bufferView} not found for accessor ${i}`)
-        return false;
-      }
-
-      if (!("byteOffset" in bufview)) bufview.byteOffset = 0
-      const accessorByteOffset = a.byteOffset || 0;
-
-      if ("byteStride" in bufview) {
-        const stride = bufview.byteStride
-        const view = new DataView(buffers[bufview.buffer])
-        a.data = new buftype(compcount * a.count)
-        for (let j = 0; j < a.count; j++) {
-          for (let k = 0; k < compcount; k++) {
-            if (buftype === Float32Array) {
-              a.data[j * compcount + k] = view.getFloat32(bufview.byteOffset + stride * j + accessorByteOffset + k * Float32Array.BYTES_PER_ELEMENT, true);
-            } else if (buftype === Uint16Array) {
-               a.data[j * compcount + k] = view.getUint16(bufview.byteOffset + stride * j + accessorByteOffset + k * Uint16Array.BYTES_PER_ELEMENT, true);
-            } else if (buftype === Uint8Array) {
-               a.data[j * compcount + k] = view.getUint8(bufview.byteOffset + stride * j + accessorByteOffset + k * Uint8Array.BYTES_PER_ELEMENT);
-            } else if (buftype === Uint32Array) {
-              a.data[j * compcount + k] = view.getUint32(bufview.byteOffset + stride * j + accessorByteOffset + k * Uint32Array.BYTES_PER_ELEMENT, true);
-            }
-          }
-        }
-      } else {
-        const finalByteOffset = bufview.byteOffset + accessorByteOffset;
-        const length = compcount * a.count;
-        a.data = new buftype(buffers[bufview.buffer], finalByteOffset, length);
-      }
-    }
-    
-    // Now process ALL primitives as standard GLTF (ignore Draco extensions)
-    if (this._debug) console.warn(`[EDITOR BYPASS] Processing ${gltf.meshes.length} meshes with standard GLTF processing`)
-    
-    for (let i = 0; i < gltf.meshes.length; i++) {
-      let m = gltf.meshes[i]
-      
-      for (let j = 0; j < m.primitives.length; j++) {
-        let p = m.primitives[j]
-        
-        // Remove Draco extension if it exists (force standard processing)
-        if (p.extensions && p.extensions.KHR_draco_mesh_compression) {
-          if (this._debug) console.warn(`🚨 [EDITOR BYPASS] Removing Draco extension from primitive ${i}.${j}, forcing standard GLTF processing`)
-          delete p.extensions.KHR_draco_mesh_compression
-          if (Object.keys(p.extensions).length === 0) {
-            delete p.extensions
-          }
-        }
-        
-        // Standard GLTF primitive processing
-        if (p.indices !== undefined) {
-          p.indices = gltf.accessors[p.indices]
-        }
-        
-        Object.keys(p.attributes).forEach(function (key) {
-          p.attributes[key] = gltf.accessors[p.attributes[key]]
-        })
-
-        if ("targets" in p) {
-          for (let k = 0; k < p.targets.length; k++) {
-            Object.keys(p.targets[k]).forEach(function (key) {
-              p.targets[k][key] = gltf.accessors[p.targets[k][key]]
-            })
-          }
-        }
-        
-        // Material processing
-        if (typeof p.material != "undefined" && p.material != null) {
-          p.material = gltf.materials[p.material]
-          
-          if (p.material.pbrMetallicRoughness && p.material.pbrMetallicRoughness.baseColorTexture) {
-            const textureIndex = p.material.pbrMetallicRoughness.baseColorTexture.index
-            if (gltf.textures && gltf.textures[textureIndex]) {
-              const imageIndex = gltf.textures[textureIndex].source
-              if (gltf.images && gltf.images[imageIndex] && gltf.images[imageIndex].name) {
-                p.material.name = gltf.images[imageIndex].name
-              } else {
-                p.material.name = `material_${i}_${j}`
-              }
-            } else {
-              p.material.name = `material_${i}_${j}`
-            }
-          } else {
-            p.material.name = `material_${i}_${j}`
-          }
-        }
-        
-        if (this._debug) console.log(`✅ [EDITOR BYPASS] Processed primitive ${i}.${j} as standard GLTF`)
-      }
-    }
-    
-    if (this._debug) console.warn('✅ EDITOR BYPASS: Successfully processed all primitives as standard GLTF')
     return true
   }
 

@@ -3,11 +3,6 @@
 {
   //@ts-ignorets-ignore
   self.C3.Plugins.Mikal_3DObject.Acts = {
-    Rotate(angle, axis) {
-      if (!this.loaded) return
-      this.model3D.rotate(angle, axis, false)
-    },
-
     SetZElevation0(z) {
       const wi = this.GetWorldInfo()
       wi.SetZElevation(z)
@@ -25,13 +20,6 @@
     SetScale(scale) {
       this.scale = scale
       this.runtime.UpdateRender()
-      this.updateBbox = true
-    },
-
-    SetRotationZXY(x, y, z) {
-      // Order of rotation based on Unity's procedure: Z,X,Y
-      if (!this.loaded) return
-      this.model3D.rotateZXY(x, y, z)
       this.updateBbox = true
     },
 
@@ -222,14 +210,6 @@
       this.renderOnce = true
     },
 
-    SetBlendMode(blendMode) {
-      this.blendMode = blendMode
-      if (!this.loaded) return
-      const wi = this.GetWorldInfo()
-      // wi.SetBlendMode(blendMode);
-      // this.runtime.UpdateRender();
-    },
-
     EnableNode(nodeName, enable) {
       if (!this.gltf) return
       if (!this.gltf.gltfData) return
@@ -391,11 +371,6 @@
       this.zWireframeWidth = z
     },
 
-    SetCameraVectorPos(x, y, z, xPos, yPos, zPos) {
-      this.cameraVector = [x, y, z]
-      this.cameraPosition = [xPos, yPos, zPos]
-    },
-
     LoadModelFromTemplate(uid) {
       if (!this.instanceModel) {
         console.warn("LoadModelFromTemplate only works on instance models")
@@ -458,11 +433,6 @@
       }
       this.renderOnce = true
     },
-    SetLightDir(x, y, z) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
-      this.lightDir = [x, y, z]
-    },
     SetViewPos(x, y, z) {
       if (!this.gltf) return
       if (!this.gltf.gltfData) return
@@ -474,12 +444,6 @@
     },
     UpdateLight(enable) {
       this.lightUpdate = enable
-    },
-    EnableSpotLight(enable, x, y, z, cutoff, edge) {
-      this.spotEnable = enable
-      this.spotDir = [x, -y, z]
-      this.spotCutoff = cutoff
-      this.spotEdge = edge
     },
     AddLights(
       name,
