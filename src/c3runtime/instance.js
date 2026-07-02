@@ -58,7 +58,8 @@
         //        removed in the UTRS trim; values ignored
         //   [16] id "cpu-xform", labeled "Worker BFC" — historically backFaceCull;
         //        the light-culling consumer was removed, value ignored
-        this.scale = properties[0]
+        const scaleValue = parseFloat(properties[0])
+        this.scale = isNaN(scaleValue) ? 1 : scaleValue
         this.xAngle = properties[2]
         this.yAngle = properties[3]
         this.zAngle = properties[4]
@@ -379,6 +380,269 @@
       }
     }
 
+
+    // ============================ Public geometry APIs ============================
+    // All world-space getters refresh modelRotate first, so results reflect the
+    // instance transform at call time. They return null/[] until the model loads.
+
+    _refreshModelRotate() {
+      if (!this.loaded || !this.gltf || !this.gltf.gltfData) return false
+      const wi = this.GetWorldInfo()
+      this.gltf.updateModelRotate(wi.GetX(), wi.GetY(), wi.GetTotalZElevation())
+      return true
+    }
+
+    // Model-local bounding box (bind pose) in model units, INCLUDING node-chain
+    // transforms (a mesh may sit under scaled/translated nodes; the raw accessor
+    // min/max alone understates the real footprint). Skinned meshes contribute
+    // their raw accessor bounds (bind pose; the node chain is not applied to
+    // skinned vertices at render time). Computed once per model from the pristine
+    // master graph (never animated) and cached on it.
+    _localBoundingBox() {
+      if (!this.loaded || !this.gltf?.gltfData) return null
+      const master = this.sdkType?.gltfData?.gltf
+      if (!master || !master.nodes) return null
+      if (master._localBoundsCache !== undefined) {
+        const c = master._localBoundsCache
+        return c ? { min: c.min.slice(), max: c.max.slice() } : null
+      }
+
+      const mat4 = globalThis.glMatrix3D.mat4
+      const vec3 = globalThis.glMatrix3D.vec3
+      const outMin = [Infinity, Infinity, Infinity]
+      const outMax = [-Infinity, -Infinity, -Infinity]
+      const p = vec3.create()
+
+      const addBounds = (min, max, matrix) => {
+        for (let i = 0; i < 8; i++) {
+          vec3.set(p, i & 1 ? max[0] : min[0], i & 2 ? max[1] : min[1], i & 4 ? max[2] : min[2])
+          if (matrix) vec3.transformMat4(p, p, matrix)
+          for (let a = 0; a < 3; a++) {
+            if (p[a] < outMin[a]) outMin[a] = p[a]
+            if (p[a] > outMax[a]) outMax[a] = p[a]
+          }
+        }
+      }
+
+      const local = mat4.create()
+      const walk = (node, parentMatrix) => {
+        mat4.fromRotationTranslationScale(
+          local,
+          node.rotation || [0, 0, 0, 1],
+          node.translation || [0, 0, 0],
+          node.scale || [1, 1, 1]
+        )
+        const world = mat4.create()
+        if (parentMatrix) mat4.multiply(world, parentMatrix, local)
+        else mat4.copy(world, local)
+        if (node.mesh) {
+          for (const primitive of node.mesh.primitives) {
+            const pos = primitive.attributes && primitive.attributes.POSITION
+            if (pos && pos.min && pos.max) {
+              // Skinned vertices ignore the node chain at render time (bind pose)
+              addBounds(pos.min, pos.max, node.skin ? null : world)
+            }
+          }
+        }
+        if (node.children) for (const child of node.children) walk(child, world)
+      }
+      if (master.scene && master.scene.nodes) {
+        for (const node of master.scene.nodes) walk(node, null)
+      }
+
+      const valid = outMin.every(isFinite) && outMax.every(isFinite)
+      master._localBoundsCache = valid ? { min: outMin, max: outMax } : null
+      return valid ? { min: outMin.slice(), max: outMax.slice() } : null
+    }
+
+    // Local size and center offset in world units at per-axis scale 1. Matches the
+    // contract of UTRS's hand-harvested MODEL_BASE_SIZES table: extents scaled by the
+    // uniform scale property, with the renderer's Y mirror baked into oy.
+    _getBaseSize() {
+      const bb = this._localBoundingBox()
+      if (!bb) return null
+      const S = Number(this.scale) || 1
+      const { min, max } = bb
+      return {
+        w: (max[0] - min[0]) * S,
+        h: (max[1] - min[1]) * S,
+        d: (max[2] - min[2]) * S,
+        ox: ((min[0] + max[0]) / 2) * S,
+        oy: (-(min[1] + max[1]) / 2) * S, // modelRotate negates Y scale
+        oz: ((min[2] + max[2]) / 2) * S,
+      }
+    }
+
+    // Fresh copy of the model->world matrix
+    _getModelRotation() {
+      if (!this._refreshModelRotate()) return null
+      return new Float32Array(this.gltf.modelRotate)
+    }
+
+    // Oriented world bounds of the (bind-pose) local box under the current transform.
+    // Corner index bits: bit0 -> X max, bit1 -> Y max, bit2 -> Z max of the LOCAL box.
+    _getWorldBoundingBox() {
+      const bb = this._localBoundingBox()
+      if (!bb || !this._refreshModelRotate()) return null
+      const vec3 = globalThis.glMatrix3D.vec3
+      const m = this.gltf.modelRotate
+      const { min, max } = bb
+      const corners = []
+      const aabbMin = [Infinity, Infinity, Infinity]
+      const aabbMax = [-Infinity, -Infinity, -Infinity]
+      const p = vec3.create()
+      for (let i = 0; i < 8; i++) {
+        vec3.set(p, i & 1 ? max[0] : min[0], i & 2 ? max[1] : min[1], i & 4 ? max[2] : min[2])
+        vec3.transformMat4(p, p, m)
+        corners.push([p[0], p[1], p[2]])
+        for (let a = 0; a < 3; a++) {
+          if (p[a] < aabbMin[a]) aabbMin[a] = p[a]
+          if (p[a] > aabbMax[a]) aabbMax[a] = p[a]
+        }
+      }
+      vec3.set(p, (min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2)
+      vec3.transformMat4(p, p, m)
+      return { corners, center: [p[0], p[1], p[2]], aabb: { min: aabbMin, max: aabbMax } }
+    }
+
+    // Name -> node and node -> parent maps, built once per instance (the node graph
+    // is fixed after the per-instance clone)
+    _ensureNodeMaps() {
+      if (this._nodeByName) return true
+      const gltf = this.gltf?.gltfData
+      if (!gltf) return false
+      const byName = new Map()
+      const parent = new Map()
+      if (gltf.nodes) {
+        for (const node of gltf.nodes) {
+          if (node.name && !byName.has(node.name)) byName.set(node.name, node)
+        }
+      }
+      const walk = (nodes, from) => {
+        if (!nodes) return
+        for (const node of nodes) {
+          if (from && !parent.has(node)) parent.set(node, from)
+          if (node.children) walk(node.children, node)
+        }
+      }
+      if (gltf.scene && gltf.scene.nodes) walk(gltf.scene.nodes, null)
+      this._nodeByName = byName
+      this._nodeParent = parent
+      return true
+    }
+
+    // World matrix of a node composed from its TRS chain (never node.matrix, which is
+    // stale on the main thread in worker mode), premultiplied by a fresh modelRotate
+    _getNodeWorldTransform(nodeName) {
+      if (!this._refreshModelRotate() || !this._ensureNodeMaps()) return null
+      const node = this._nodeByName.get(nodeName)
+      if (!node) return null
+      const mat4 = globalThis.glMatrix3D.mat4
+      const path = []
+      let current = node
+      while (current) {
+        path.unshift(current)
+        current = this._nodeParent.get(current)
+      }
+      const world = mat4.create()
+      const local = mat4.create()
+      for (const n of path) {
+        mat4.fromRotationTranslationScale(local, n.rotation || [0, 0, 0, 1], n.translation || [0, 0, 0], n.scale || [1, 1, 1])
+        mat4.multiply(world, world, local)
+      }
+      mat4.multiply(world, this.gltf.modelRotate, world)
+      const quat = globalThis.glMatrix3D.quat
+      const rotation = quat.create()
+      const scale = [0, 0, 0]
+      mat4.getRotation(rotation, world)
+      mat4.getScaling(scale, world)
+      return {
+        position: [world[12], world[13], world[14]],
+        // NOTE: modelRotate mirrors Y (negative determinant); quaternion/scale are
+        // correct only up to that mirror — matrix is the ground truth
+        matrix: world,
+        quaternion: [rotation[0], rotation[1], rotation[2], rotation[3]],
+        scale: [scale[0], scale[1], scale[2]],
+      }
+    }
+
+    _getNodeWorldPosition(nodeName) {
+      const t = this._getNodeWorldTransform(nodeName)
+      return t ? t.position : null
+    }
+
+    // Zero-copy access to the shared bind-pose geometry. positions/indices are the
+    // SHARED accessor arrays — callers must not mutate them.
+    _getGeometry() {
+      const gltf = this.gltf?.gltfData
+      if (!this.loaded || !gltf || !gltf.nodes) return []
+      const out = []
+      for (const node of gltf.nodes) {
+        if (!node.mesh) continue
+        for (const primitive of node.mesh.primitives) {
+          const pos = primitive.attributes && primitive.attributes.POSITION
+          if (!pos || !pos.data || !primitive.indices || !primitive.indices.data) continue
+          out.push({
+            nodeName: node.name,
+            positions: pos.data,
+            indices: primitive.indices.data,
+            skinned: !!node.skin,
+            disabled: !!node.disabled,
+          })
+        }
+      }
+      return out
+    }
+
+    // World-space triangles of enabled nodes as [ {x,y,z} x3 ] entries. Skinned nodes
+    // use the bind pose (posed vertices only exist on the GPU under GPU skinning).
+    _getWorldTriangles() {
+      const entries = this._getGeometry()
+      if (!entries.length || !this._refreshModelRotate() || !this._ensureNodeMaps()) return []
+      const vec3 = globalThis.glMatrix3D.vec3
+      const mat4 = globalThis.glMatrix3D.mat4
+      const modelRotate = this.gltf.modelRotate
+      const local = mat4.create()
+      const full = mat4.create()
+      const p = vec3.create()
+      const triangles = []
+      for (const entry of entries) {
+        if (entry.disabled) continue
+        if (entry.skinned) {
+          mat4.copy(full, modelRotate)
+        } else {
+          // Compose the node's TRS chain (bind/animated local pose)
+          const node = this._nodeByName.get(entry.nodeName)
+          mat4.identity(full)
+          const path = []
+          let current = node
+          while (current) {
+            path.unshift(current)
+            current = this._nodeParent.get(current)
+          }
+          const chain = mat4.create()
+          for (const n of path) {
+            mat4.fromRotationTranslationScale(local, n.rotation || [0, 0, 0, 1], n.translation || [0, 0, 0], n.scale || [1, 1, 1])
+            mat4.multiply(chain, chain, local)
+          }
+          mat4.multiply(full, modelRotate, chain)
+        }
+        const positions = entry.positions
+        const indices = entry.indices
+        for (let i = 0; i + 2 < indices.length; i += 3) {
+          const tri = new Array(3)
+          for (let v = 0; v < 3; v++) {
+            const base = indices[i + v] * 3
+            vec3.set(p, positions[base], positions[base + 1], positions[base + 2])
+            vec3.transformMat4(p, p, full)
+            tri[v] = { x: p[0], y: p[1], z: p[2] }
+          }
+          triangles.push(tri)
+        }
+      }
+      return triangles
+    }
+
     SaveToJson() {
       return {
         // data to be saved for savegames
@@ -580,22 +844,53 @@
       this.sdk_instance = map.get(this)
     }
 
-    getNodePointPosition(nodeName, pointIndex) {
-      const vec3 = globalThis.glMatrix3D.vec3
-      let rotatedPoint = [0, 0, 0]
-      let mapThis = map.get(this)
-      if (!mapThis?.gltf?.gltfData) return rotatedPoint
-      if (!mapThis?.gltf?.meshNames?.has(nodeName)) return rotatedPoint
-      if (!mapThis?.gltf?.modelRotate) return rotatedPoint
-      const drawVerts = mapThis.gltf.drawMeshes[mapThis.gltf.meshNames.get(nodeName)].drawVerts[0]
-      if (!drawVerts) return rotatedPoint
-      const point = vec3.fromValues(
-        drawVerts[pointIndex * 3],
-        drawVerts[pointIndex * 3 + 1],
-        drawVerts[pointIndex * 3 + 2]
-      )
-      vec3.transformMat4(rotatedPoint, point, mapThis.gltf.modelRotate)
-      return rotatedPoint
+    // ---- Geometry / bounds APIs (see the _-prefixed implementations above) ----
+
+    // Model-local bounding box: { min:[x,y,z], max:[x,y,z] } in model units, or null
+    get localBoundingBox() {
+      return map.get(this)._localBoundingBox()
+    }
+
+    // { w,h,d, ox,oy,oz } in world units at per-axis scale 1 (replaces the
+    // hand-harvested MODEL_BASE_SIZES table)
+    getBaseSize() {
+      return map.get(this)._getBaseSize()
+    }
+
+    // { corners:[[x,y,z]x8], center:[x,y,z], aabb:{min,max} } under the current transform
+    getWorldBoundingBox() {
+      return map.get(this)._getWorldBoundingBox()
+    }
+
+    // Float32Array(16) copy of the model->world matrix, refreshed at call time
+    getModelRotation() {
+      return map.get(this)._getModelRotation()
+    }
+
+    // { position, matrix, quaternion, scale } — works in worker/GPU-skinning mode
+    getNodeWorldTransform(nodeName) {
+      return map.get(this)._getNodeWorldTransform(nodeName)
+    }
+
+    getNodeWorldPosition(nodeName) {
+      return map.get(this)._getNodeWorldPosition(nodeName)
+    }
+
+    // Joints are nodes; kept as an alias for familiarity
+    getBoneWorldPosition(boneName) {
+      return map.get(this)._getNodeWorldPosition(boneName)
+    }
+
+    // [{ nodeName, positions, indices, skinned, disabled }] — positions/indices are
+    // SHARED bind-pose accessor arrays; do not mutate
+    getGeometry() {
+      return map.get(this)._getGeometry()
+    }
+
+    // [[{x,y,z},{x,y,z},{x,y,z}], ...] world-space triangles of enabled nodes
+    // (bind pose for skinned nodes)
+    getWorldTriangles() {
+      return map.get(this)._getWorldTriangles()
     }
 
     set xAngle(angle) {
