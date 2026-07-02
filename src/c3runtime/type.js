@@ -15,12 +15,14 @@
                 this.animWorkerHost.release();
                 this.animWorkerHost = null;
             }
+            // Cache-shared textures are owned (and refcount-freed) by the cache entry
+            const texturesShared = !!(this.gltfData && this.gltfData._cacheEntry);
             if (this.gltfData && typeof this.gltfData.release === "function") {
                 this.gltfData.release();
                 this.gltfData = null;
             }
             const renderer = this._runtime?.GetCanvasManager?.()?.GetRenderer?.();
-            if (renderer) {
+            if (renderer && !texturesShared) {
                 if (this.texture) {
                     for (const name in this.texture) {
                         renderer.DeleteTexture(this.texture[name]);
@@ -48,6 +50,25 @@
 
         async LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner, instanceModel)
         {
+            // Cache-shared model: GPU textures are uploaded once into the cache entry
+            // and shared by every object type using this model
+            const cacheEntry = gltfData._cacheEntry;
+            if (cacheEntry) {
+                if (gltfData.dynamicTexturesLoaded === true || gltfData.dynamicTexturesLoaded === null) return;
+                gltfData.dynamicTexturesLoaded = null;
+                if (!cacheEntry.texturesPromise) {
+                    cacheEntry.renderer = renderer;
+                    cacheEntry.texturesPromise = this._uploadCachedTextures(renderer, cacheEntry);
+                }
+                const shared = await cacheEntry.texturesPromise;
+                for (const name in shared.textures) {
+                    textures[name] = shared.textures[name];
+                }
+                whiteTextureOwner.whiteTexture = shared.whiteTexture;
+                gltfData.dynamicTexturesLoaded = true;
+                return;
+            }
+
             const gltf = gltfData.gltf;
 
             if (gltfData.dynamicTexturesLoaded === true || gltfData.dynamicTexturesLoaded === null) return;
@@ -84,6 +105,30 @@
             if (instanceModel) {
                 gltfData = null
             }
+        }
+
+        async _uploadCachedTextures(renderer, entry)
+        {
+            const result = { textures: {}, whiteTexture: null };
+
+            const whiteBitmap = entry.whiteImageBitmap;
+            result.whiteTexture = renderer.CreateDynamicTexture(whiteBitmap.width, whiteBitmap.height);
+            await renderer.UpdateTexture(whiteBitmap, result.whiteTexture);
+            if (typeof whiteBitmap.close === "function") whiteBitmap.close();
+
+            const bitmaps = entry.imageBitmap || {};
+            const sampling = this._runtime.GetSampling();
+            for (const imageName in bitmaps) {
+                const bitmap = bitmaps[imageName];
+                const options = { sampling: sampling, wrapX: bitmap.wrapS, wrapY: bitmap.wrapT };
+                result.textures[imageName] = renderer.CreateDynamicTexture(bitmap.width, bitmap.height, options);
+                await renderer.UpdateTexture(bitmap, result.textures[imageName]);
+                if (typeof bitmap.close === "function") bitmap.close();
+            }
+
+            entry.textures = result.textures;
+            entry.whiteTexture = result.whiteTexture;
+            return result;
         }
 
         LoadTextures(renderer)

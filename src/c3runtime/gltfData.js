@@ -13,6 +13,7 @@ class GltfData {
     this.sharedModelBoneUbo = null; // For the shared UBO containing bone matrices for this model asset
     this.bonesPerModelAsset = 0; // Actual number of bones in this model asset
     this.rendererForUbo = null; // Store renderer for UBO release
+    this._cacheEntry = null; // Cross-type model cache entry (shared parsed gltf + GPU textures)
   }
 
   release() {
@@ -20,6 +21,55 @@ class GltfData {
       this._dracoDecoder.dispose();
       this._dracoDecoder = null;
     }
+
+    // Cache-shared model: only drop our reference; shared resources are freed
+    // with the last reference (the object graph itself is left to GC)
+    if (this._cacheEntry) {
+      const entry = this._cacheEntry
+      this._cacheEntry = null
+      entry.refCount--
+      if (entry.refCount <= 0) {
+        if (globalThis.gltf3DObjectModelCache) globalThis.gltf3DObjectModelCache.delete(entry.key)
+        const renderer = entry.renderer
+        if (renderer) {
+          if (entry.textures) {
+            for (const name in entry.textures) renderer.DeleteTexture(entry.textures[name])
+          }
+          if (entry.whiteTexture) renderer.DeleteTexture(entry.whiteTexture)
+        }
+        entry.textures = null
+        entry.whiteTexture = null
+        // Close bitmaps in case textures were never uploaded (close is a no-op if already closed)
+        if (entry.imageBitmap) {
+          for (const key in entry.imageBitmap) {
+            const bitmap = entry.imageBitmap[key]
+            if (bitmap && typeof bitmap.close === "function") bitmap.close()
+          }
+          entry.imageBitmap = null
+        }
+        if (entry.whiteImageBitmap && typeof entry.whiteImageBitmap.close === "function") {
+          entry.whiteImageBitmap.close()
+        }
+        entry.whiteImageBitmap = null
+        entry.gltf = null
+      }
+      // @ts-ignore
+      this.gltf = null
+      // @ts-ignore
+      this.imageBitmap = null
+      this._runtime = null
+      this._sdkType = null
+      // @ts-ignore
+      this.dynamicTexturesLoaded = null
+      if (this.sharedModelBoneUbo && this.rendererForUbo) {
+        const gl = this.rendererForUbo._gl
+        if (gl) gl.deleteBuffer(this.sharedModelBoneUbo)
+        this.sharedModelBoneUbo = null
+      }
+      this.rendererForUbo = null
+      return
+    }
+
     // Release gltf data structure contents
     if (this.gltf) {
       // Release buffers
@@ -130,8 +180,78 @@ class GltfData {
   /*
 	Requests an url as a json file, then does some processing on that, and finally calls a js or c2 function.
 	Expects an "embeded" gltf file.
+
+	Different object types loading the same model file share one parsed gltf (and
+	later one set of GPU textures) through a global cache keyed by path. Editor and
+	per-instance (instanceModel) loads bypass the cache.
     */
   async load(gltfPath, isRuntime, debug) {
+    const cacheEligible = isRuntime && !(this._sdkType && this._sdkType.instanceModel === true)
+    if (!cacheEligible) {
+      return this._loadDirect(gltfPath, isRuntime, debug)
+    }
+
+    if (!globalThis.gltf3DObjectModelCache) globalThis.gltf3DObjectModelCache = new Map()
+    const cache = globalThis.gltf3DObjectModelCache
+    let entry = cache.get(gltfPath)
+    if (entry && entry.runtime !== this._runtime) {
+      // Stale entry from a previous runtime session
+      cache.delete(gltfPath)
+      entry = null
+    }
+
+    if (entry) {
+      // Adopt the shared model loaded (or being loaded) by another object type
+      entry.refCount++
+      this._cacheEntry = entry
+      this._debug = debug
+      this.rendererForUbo = this._runtime.GetCanvasManager().GetWebGLRenderer()
+      const ok = await entry.promise
+      if (!ok) return false
+      this.gltf = entry.gltf
+      this.bonesPerModelAsset = entry.bonesPerModelAsset
+      if (this._sdkType) this._sdkType.dataLoaded = true
+      return true
+    }
+
+    // First loader of this path: parse and publish into the cache
+    entry = {
+      key: gltfPath,
+      runtime: this._runtime,
+      refCount: 1,
+      promise: null,
+      gltf: null,
+      imageBitmap: null,
+      whiteImageBitmap: null,
+      bonesPerModelAsset: 0,
+      texturesPromise: null,
+      textures: null,
+      whiteTexture: null,
+      renderer: null,
+    }
+    this._cacheEntry = entry
+    cache.set(gltfPath, entry)
+    entry.promise = this._loadDirect(gltfPath, isRuntime, debug)
+      .then((ok) => {
+        if (ok) {
+          entry.gltf = this.gltf
+          entry.imageBitmap = this.imageBitmap
+          entry.whiteImageBitmap = this.whiteImageBitmap
+          entry.bonesPerModelAsset = this.bonesPerModelAsset
+        } else {
+          cache.delete(gltfPath)
+        }
+        return ok
+      })
+      .catch((err) => {
+        cache.delete(gltfPath)
+        if (debug) console.error("[3DObject] model load failed:", gltfPath, err)
+        return false
+      })
+    return entry.promise
+  }
+
+  async _loadDirect(gltfPath, isRuntime, debug) {
     let runtime = this._runtime
     let sdkType = this._sdkType
     this._debug = debug // Store debug flag for use in other methods

@@ -153,8 +153,16 @@
       const sampling = this.runtime.GetSampling()
       let options = { sampling: sampling }
 
-      // Free the previous texture if this material name is being replaced
-      if (textures[materialName]) renderer.DeleteTexture(textures[materialName])
+      // Free the previous texture if this material name is being replaced — unless it
+      // belongs to the cross-type model cache (other types may still be using it;
+      // the cache frees it with the last reference)
+      const oldTexture = textures[materialName]
+      if (oldTexture) {
+        const cacheTextures = !this.instanceModel && this.sdkType?.gltfData?._cacheEntry?.textures
+        if (!(cacheTextures && cacheTextures[materialName] === oldTexture)) {
+          renderer.DeleteTexture(oldTexture)
+        }
+      }
       textures[materialName] = renderer.CreateDynamicTexture(width, height, options)
       await renderer.UpdateTexture(imageBitmap, textures[materialName])
       textures[materialName].materialPath = materialPath
@@ -341,7 +349,12 @@
       const renderer = this.renderer
       const textures = this.instanceModel ? this.texture : this.sdkType.texture
       if (materialName in textures) {
-        renderer.DeleteTexture(textures[materialName])
+        // Textures owned by the cross-type model cache are freed with the last
+        // reference, not here — other types may still be using them
+        const cacheTextures = !this.instanceModel && this.sdkType?.gltfData?._cacheEntry?.textures
+        if (!(cacheTextures && cacheTextures[materialName] === textures[materialName])) {
+          renderer.DeleteTexture(textures[materialName])
+        }
         delete textures[materialName]
       }
     },
