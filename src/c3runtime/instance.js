@@ -322,9 +322,17 @@
       const hasValidDynamicBbox = maxBB && minBB && maxBB[0] !== -Infinity && minBB[0] !== Infinity
       const useStaticBbox = gpuSkinning || !hasValidDynamicBbox
 
-      if (useStaticBbox && this.gltf?.gltfData?.boundingBox) {
-        maxBB = this.gltf.gltfData.boundingBox.max
-        minBB = this.gltf.gltfData.boundingBox.min
+      if (useStaticBbox) {
+        // Prefer the bounds of the currently ENABLED nodes (e.g. the active skin);
+        // fall back to the whole-model bounds
+        const enabled = this._enabledLocalBounds()
+        if (enabled) {
+          maxBB = enabled.max
+          minBB = enabled.min
+        } else if (this.gltf?.gltfData?.boundingBox) {
+          maxBB = this.gltf.gltfData.boundingBox.max
+          minBB = this.gltf.gltfData.boundingBox.min
+        }
       }
 
       const cube = [
@@ -641,6 +649,61 @@
         }
       }
       return triangles
+    }
+
+    // Local bounds of ENABLED nodes only (bind pose), used for the GPU-skinning
+    // bounding box so a character shows the box of its active skin rather than the
+    // union of every variant. Cached; invalidated when nodes are toggled.
+    _enabledLocalBounds() {
+      if (this._enabledBoundsCache !== undefined) return this._enabledBoundsCache
+      const gltf = this.gltf?.gltfData
+      if (!gltf || !gltf.nodes || !this._ensureNodeMaps()) return null
+      const mat4 = globalThis.glMatrix3D.mat4
+      const vec3 = globalThis.glMatrix3D.vec3
+      const mn = [Infinity, Infinity, Infinity]
+      const mx = [-Infinity, -Infinity, -Infinity]
+      const p = vec3.create()
+      const local = mat4.create()
+      const chain = mat4.create()
+      for (const node of gltf.nodes) {
+        if (!node.mesh || node.disabled) continue
+        let matrix = null
+        if (!node.skin) {
+          // Unskinned meshes render through their node chain
+          mat4.identity(chain)
+          const path = []
+          let current = node
+          while (current) {
+            path.unshift(current)
+            current = this._nodeParent.get(current)
+          }
+          for (const n of path) {
+            mat4.fromRotationTranslationScale(local, n.rotation || [0, 0, 0, 1], n.translation || [0, 0, 0], n.scale || [1, 1, 1])
+            mat4.multiply(chain, chain, local)
+          }
+          matrix = chain
+        }
+        for (const primitive of node.mesh.primitives) {
+          const pos = primitive.attributes && primitive.attributes.POSITION
+          if (!pos || !pos.min || !pos.max) continue
+          for (let i = 0; i < 8; i++) {
+            vec3.set(p, i & 1 ? pos.max[0] : pos.min[0], i & 2 ? pos.max[1] : pos.min[1], i & 4 ? pos.max[2] : pos.min[2])
+            if (matrix) vec3.transformMat4(p, p, matrix)
+            for (let a = 0; a < 3; a++) {
+              if (p[a] < mn[a]) mn[a] = p[a]
+              if (p[a] > mx[a]) mx[a] = p[a]
+            }
+          }
+        }
+      }
+      const valid = mn.every(isFinite) && mx.every(isFinite)
+      this._enabledBoundsCache = valid ? { min: mn, max: mx } : null
+      return this._enabledBoundsCache
+    }
+
+    _invalidateEnabledBounds() {
+      this._enabledBoundsCache = undefined
+      this.updateBbox = true
     }
 
     SaveToJson() {

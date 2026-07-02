@@ -93,6 +93,7 @@
       if (!node) return
       node.disabled = !enable
       this.renderOnce = true
+      this._invalidateEnabledBounds()
       if (this.workerAnimation) {
         this.gltf.enableNode(nodeName, enable)
       }
@@ -129,6 +130,7 @@
       }
 
       this.renderOnce = true
+      this._invalidateEnabledBounds()
       this.allNodesDisabled = false
     },
 
@@ -159,6 +161,7 @@
       }
 
       this.renderOnce = true
+      this._invalidateEnabledBounds()
       this.allNodesDisabled = true
     },
 
