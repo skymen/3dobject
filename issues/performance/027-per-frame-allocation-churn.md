@@ -2,6 +2,7 @@
 
 **Severity:** medium
 **Fix recommendation:** Recommended — incremental; take the CPU lit path (item 1) first, it dwarfs the rest
+**Status (v3.0.0):** Largely resolved by the trim (the CPU lit path, UV quads and vertex snapping were deleted); remaining: per-Draw tempQuad, bbox cube scratch, animation blend snapshots.
 **Area:** performance
 **Files:** multiple (itemized below)
 

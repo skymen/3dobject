@@ -2,6 +2,7 @@
 
 **Severity:** low
 **Fix recommendation:** Optional — cosmetic cleanup
+**Status (v3.0.0):** Partially resolved in v3.0.0: constructor/release duplicates were removed; SetZElevation0 still sets updateBbox twice.
 **Area:** code quality
 **Files:** as listed
 

@@ -2,6 +2,7 @@
 
 **Severity:** low
 **Fix recommendation:** Nice to have — teardown hygiene; matters mainly for in-page runtime restarts
+**Status (v3.0.0):** Partially resolved in v3.0.0: the leftover opts log was removed; shader/UBO/listener teardown remains open.
 **Area:** lifecycle
 **Files:** `src/c3runtime/plugin.js:8, 22-32, 218-230` (approx.)
 

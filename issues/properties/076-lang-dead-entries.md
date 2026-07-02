@@ -2,6 +2,7 @@
 
 **Severity:** low
 **Fix recommendation:** Optional — lang cleanup; annotate rather than rename
+**Status (v3.0.0):** Partially resolved in v3.0.0: the removed features' lang entries were deleted; obj-path/mtl-path fossils remain.
 **Area:** editor / lang
 **Files:** `src/lang/en-US.json`
 

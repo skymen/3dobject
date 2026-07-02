@@ -2,6 +2,7 @@
 
 **Severity:** critical
 **Fix recommendation:** Strongly recommended — a handful of small fixes; the fallback is broken exactly where it is needed
+**Status (v3.0.0):** Partially resolved in v3.0.0: the broken static call site went away with LoadMaterial's deletion; the polyfill itself (document/no-revoke/no-error) still backs gltfData's internal fallback.
 **Area:** runtime / loading
 **Files:** `src/c3runtime/gltfData.js:694-702` (polyfill), `src/c3runtime/actions.js:146` (static call), `src/c3runtime/gltfData.js:613,663` (internal calls)
 

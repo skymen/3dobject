@@ -2,6 +2,7 @@
 
 **Severity:** high
 **Fix recommendation:** Recommended — needs a migration story (existing projects reference the image-derived names)
+**Status (v3.0.0):** Still open in v3.0.0 (trim kept the loader as-is).
 **Area:** loading / materials
 **Files:** `src/c3runtime/gltfData.js` `_processStandardPrimitives` (~1249-1271); consumers `src/c3runtime/gltfModel.js:344` (`textures[material.name]`), `:294` (`materialsModify.get(material?.name)`), same in gltfModelW.js
 

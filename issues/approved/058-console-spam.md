@@ -2,6 +2,7 @@
 
 **Severity:** low
 **Fix recommendation:** Recommended — quick log gating; directly user-visible polish (every Draco user sees the spam)
+**Status (v3.0.0):** Partially resolved in v3.0.0: Draco emoji logs and the plugin opts log were removed; per-frame warns in gltfModel/gltfModelW/boneBuffer remain.
 **Area:** logging
 **Files:** as listed
 

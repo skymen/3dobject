@@ -2,6 +2,7 @@
 
 **Severity:** high
 **Fix recommendation:** Recommended — real feature gap in worker mode; small, well-localized matrix calls
+**Status (v3.0.0):** Still open in v3.0.0: SetLocalCenter remains an ACE and worker-mode render/updateModelRotate still ignore localCenter.
 **Area:** runtime / transforms
 **Files:** `src/c3runtime/gltfModelW.js` render (~841) and `updateModelRotate` (~1689), `src/c3runtime/gltfModel.js:251-257` (correct) and its `updateModelRotate` (~1474), `src/c3runtime/gltfModelW.js` `getEditorData` (localCenter only in isEditor branch), `src/c3runtime/gltfWorker.js` `updateLight` (falls back to [0,0,0])
 
