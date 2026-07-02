@@ -48,7 +48,7 @@
             this.animWorkerHost = null; // shared per-type animation worker (GPU skinning)
         }
 
-        async LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner, instanceModel)
+        async LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner)
         {
             // Cache-shared model: GPU textures are uploaded once into the cache entry
             // and shared by every object type using this model

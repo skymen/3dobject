@@ -13,12 +13,6 @@
         OnAnimationNameFinished(name) {
             return (this.animationNameFinished == name);
         },
-        IsAnimationFinished() {
-            return this.IsAnimationFinished;
-        },
-        IsWireframeEnabled() {
-            return this.wireframe;
-        },
         IsPlaying(animation) {
             return (this.animationName == animation);
         },

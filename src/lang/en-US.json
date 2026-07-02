@@ -135,11 +135,6 @@
             "display-text": "Is loaded",
             "description": "True if the 3DObject has loaded its 3D model."
           },
-          "is-animation-finished": {
-            "list-name": "Is animation finished",
-            "display-text": "Is animation finished",
-            "description": "True if the animation has finished (only true if not looping)."
-          },
           "on-animation-finished": {
             "list-name": "On any animation finished",
             "display-text": "On any animation finished",
@@ -218,17 +213,6 @@
               "scale": {
                 "name": "Scale",
                 "desc": "The size to scale from the original size."
-              }
-            }
-          },
-          "set-z-height": {
-            "list-name": "Set z height",
-            "display-text": "Set z height to [i]{0}[/i]",
-            "description": "Set z height, used for viewport clipping.",
-            "params": {
-              "z-height": {
-                "name": "Z height",
-                "desc": "The z height of the object, used for viewport clipping."
               }
             }
           },
@@ -345,23 +329,6 @@
               }
             }
           },
-          "update-bbox": {
-            "list-name": "Update bounding box",
-            "display-text": "Update bounding box",
-            "description": "Update bounding box based on current 3D animation.",
-            "params": {}
-          },
-          "load-model": {
-            "list-name": "Load model",
-            "display-text": "Load model [i]{0}[/i]",
-            "description": "Load model from path.",
-            "params": {
-              "gltf-path": {
-                "name": "Gltf path",
-                "desc": "Gltf/glb project file name or URL to Gltf/glb file (with URL, it will not show in the editor)."
-              }
-            }
-          },
           "enable-node": {
             "list-name": "Enable node",
             "display-text": "Set node [i]{0}[/i] enable to [i]{1}[/i]",
@@ -389,61 +356,6 @@
             "description": "Disable all nodes for render.",
             "params": {}
           },
-          "set-origin-x": {
-            "list-name": "Set origin X",
-            "display-text": "Set origin X to [i]{0}[/i]",
-            "description": "Set origin X (Normalized value, 0.5 is center).",
-            "params": {
-              "origin-x": {
-                "name": "X origin",
-                "desc": "X origin (Normalized value, 0.5 is center)."
-              }
-            }
-          },
-          "set-origin-y": {
-            "list-name": "Set origin Y",
-            "display-text": "Set origin Y to [i]{0}[/i]",
-            "description": "Set origin Y (Normalized value, 0.5 is center).",
-            "params": {
-              "origin-y": {
-                "name": "Y origin",
-                "desc": "Y origin (Normalized value, 0.5 is center)."
-              }
-            }
-          },
-          "set-bbox-scale": {
-            "list-name": "Set bounding box scale",
-            "display-text": "Set bounding box scale to [i]{0}[/i]",
-            "description": "Set bounding box scale.",
-            "params": {
-              "scale": {
-                "name": "Scale",
-                "desc": "Scale factor for bounding box."
-              }
-            }
-          },
-          "set-use-bone-bounding-box": {
-            "list-name": "Set use bone bounding box",
-            "display-text": "Set use bone bounding box: [b]{0}[/b]",
-            "description": "Enable or disable bone-based bounding box calculation. When disabled, uses the static model bounding box instead.",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable bone-based bounding box calculation."
-              }
-            }
-          },
-          "load-model-from-template": {
-            "list-name": "Load model from prefab instance",
-            "display-text": "Load model from prefab uid [i]{0}[/i]",
-            "description": "Load model from prefab instance of object.",
-            "params": {
-              "template-uid": {
-                "name": "Prefab uid",
-                "desc": "Prefab uid of instance to load model from, prefab must already be loaded."
-              }
-            }
-          },
           "set-animation-blend": {
             "list-name": "Set animation blend time",
             "display-text": "Set animation blend time to [i]{0}[/i] seconds",
@@ -463,71 +375,6 @@
               "enable": {
                 "name": "Enable",
                 "desc": "Enable static geometry."
-              }
-            }
-          },
-          "set-quaternion": {
-            "list-name": "Set quaternion",
-            "display-text": "Set quaternion to {0}, offset [i]({1}, {2}, {3})[/i]",
-            "description": "Set quaternion for rotation (JSON array string).",
-            "params": {
-              "quaternion": {
-                "name": "Quaternion",
-                "desc": "Quaternion (JSON array string)."
-              },
-              "offset-x": {
-                "name": "Offsey X",
-                "desc": "Offset X - beware gimbal lock of offsets!"
-              },
-              "offset-y": {
-                "name": "Offsey Y",
-                "desc": "Offset Y - beware gimbal lock of offsets!"
-              },
-              "offset-z": {
-                "name": "Offsey Z",
-                "desc": "Offset Z - beware gimbal lock of offsets!"
-              }
-            }
-          },
-          "enable-quaternion": {
-            "list-name": "Enable quaternion",
-            "display-text": "Set quaternion enabled: [b]{0}[/b]",
-            "description": "Enable quaternion for rotation.",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable quaternion for rotation."
-              }
-            }
-          },
-          "set-target-to-position": {
-            "list-name": "Set target to position",
-            "display-text": "Set target to position [i]({0}, {1}, {2})[/i], up [i]({3}, {4}, {5})[/i]",
-            "description": "Set target to position.",
-            "params": {
-              "x": {
-                "name": "X",
-                "desc": "X."
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Y."
-              },
-              "z": {
-                "name": "Z",
-                "desc": "Z."
-              },
-              "up-x": {
-                "name": "Up X",
-                "desc": "Up X."
-              },
-              "up-y": {
-                "name": "Up Y",
-                "desc": "Up Y."
-              },
-              "up-z": {
-                "name": "Up Z",
-                "desc": "Up Z."
               }
             }
           }

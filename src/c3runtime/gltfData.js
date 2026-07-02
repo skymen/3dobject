@@ -183,11 +183,10 @@ class GltfData {
 
 	Different object types loading the same model file share one parsed gltf (and
 	later one set of GPU textures) through a global cache keyed by path. Editor and
-	per-instance (instanceModel) loads bypass the cache.
+	Editor loads bypass the cache.
     */
   async load(gltfPath, isRuntime, debug) {
-    const cacheEligible = isRuntime && !(this._sdkType && this._sdkType.instanceModel === true)
-    if (!cacheEligible) {
+    if (!isRuntime) {
       return this._loadDirect(gltfPath, isRuntime, debug)
     }
 

@@ -196,7 +196,7 @@
               whiteTextureOwner.whiteTexture,
               this._inst.GetColor(),
               textures,
-              this.instanceTexture
+              1 // opacity
             )
             // this.layoutView.Refresh();
             if (

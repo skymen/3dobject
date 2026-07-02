@@ -39,6 +39,12 @@
 
       SDK.Lang.PushContext(".properties")
 
+      // NOTE (UTRS trim): the property list is FROZEN — the project stores values
+      // by these ids (source) and by index (export), so entries must never be
+      // removed, reordered, or renamed. Several are runtime-inert after the trim:
+      // z-elevation (obsolete), instance-model, image-texture, wireframe, and
+      // cpu-xform (id is historical; its label "Worker BFC" described the old
+      // light-culling behavior, also removed). rotation-order is editor-only.
       this._info.SetProperties([
         new SDK.PluginProperty("text", "scale", "1"),
         new SDK.PluginProperty("float", "z-elevation", {

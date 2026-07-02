@@ -147,7 +147,7 @@ class GltfModelTop {
     if (locHasVertexColors) gl.uniform1f(locHasVertexColors, 1.0) // Reset to C3 default (use vertex colors)
   }
 
-  render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, instanceTexture, opacity) {
+  render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {
     if (opacity === 0) return
     if (!this.inst.isEditor) renderer.EndBatch()
 
@@ -181,19 +181,7 @@ class GltfModelTop {
       const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
       const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
       const rotate = quat.create()
-      if (this.inst.cannonBody && this.inst.cannonSetRotation) {
-        quat.set(
-          rotate,
-          this.inst.cannonBody.quaternion.x,
-          this.inst.cannonBody.quaternion.y,
-          this.inst.cannonBody.quaternion.z,
-          this.inst.cannonBody.quaternion.w
-        )
-      } else if (this.inst.enableQuaternion) {
-        quat.copy(rotate, this.inst.quaternion)
-      } else {
-        quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-      }
+      quat.fromEuler(rotate, xAngle, yAngle, zAngle)
       mat4.fromRotationTranslationScaleOrigin(
         modelRotate,
         rotate,
@@ -224,27 +212,6 @@ class GltfModelTop {
       const material = this.drawMeshes[j].material
       const hasTexture =
         material && "pbrMetallicRoughness" in material && "baseColorTexture" in material.pbrMetallicRoughness
-      let rWidth = null
-      let rHeight = null
-      let rOffsetX = null
-      let rOffsetY = null
-      const imageInfo = !this.inst.instanceTexture
-        ? null
-        : this.inst.isEditor
-        ? null
-        : this.inst._objectClass.GetImageInfo()
-      const textureRect = !this.inst.instanceTexture
-        ? null
-        : this.inst.isEditor
-        ? this.inst.GetTexRect()
-        : imageInfo.GetTexRect()
-      if (this.inst.instanceTexture) {
-        rWidth = textureRect.width()
-        rHeight = textureRect.height()
-        rOffsetX = textureRect.getLeft()
-        rOffsetY = textureRect.getTop()
-      }
-
       let color
       if (material && "pbrMetallicRoughness" in material && "baseColorFactor" in material.pbrMetallicRoughness) {
         color = material.pbrMetallicRoughness.baseColorFactor
@@ -262,7 +229,7 @@ class GltfModelTop {
         }
       }
 
-      if (!instanceTexture) {
+      {
         if (!hasTexture) {
           if (currentTexture != whiteTexture) {
             renderer.SetTexture(whiteTexture)
@@ -326,16 +293,6 @@ class GltfModelTop {
                 uv[ind[i * 3 + 2] * 2 + 1]
               )
             }
-            if (this.inst.instanceTexture) {
-              tempQuad.setTlx(tempQuad.getTlx() * rWidth + rOffsetX)
-              tempQuad.setTly(tempQuad.getTly() * rHeight + rOffsetY)
-              tempQuad.setTrx(tempQuad.getTrx() * rWidth + rOffsetX)
-              tempQuad.setTry(tempQuad.getTry() * rHeight + rOffsetY)
-              tempQuad.setBlx(tempQuad.getBlx() * rWidth + rOffsetX)
-              tempQuad.setBly(tempQuad.getBly() * rHeight + rOffsetY)
-              tempQuad.setBrx(tempQuad.getBrx() * rWidth + rOffsetX)
-              tempQuad.setBry(tempQuad.getBry() * rHeight + rOffsetY)
-            }
           } else {
             // Set face to color if possible
             tempQuad.set(0, 0, 1, 0, 0, 1, 0, 1)
@@ -365,7 +322,7 @@ class GltfModelTop {
     }
 
     // Restore modelview matrix
-    if (!(this.inst.isEditor || this.inst.cpuXform)) {
+    if (!this.inst.isEditor) {
       renderer.SetModelViewMatrix(tmpModelView)
     }
     this.inst.totalTriangles = totalTriangles
@@ -552,7 +509,7 @@ class GltfModelTop {
           // vec3.transformMat4(v, vv, node.matrix);
           // mat4.multiplyVec3(node.matrix, posData.subarray(j*3, j*3+3), v);
 
-          if (this.inst.isEditor || this.inst.cpuXform) {
+          if (this.inst.isEditor) {
             vec3.transformMat4(v, v, modelScaleRotate)
           }
 
@@ -645,7 +602,7 @@ class GltfModelTop {
 
     const modelScaleRotate = mat4.create()
 
-    if (this.inst.isEditor || this.inst.cpuXform) {
+    if (this.inst.isEditor) {
       const xAngle = this.inst.xAngle
       const yAngle = this.inst.yAngle
       const zAngle = this.inst.zAngle
@@ -813,7 +770,7 @@ class GltfModelTop {
             }
           }
 
-          if (this.inst.isEditor || this.inst.cpuXform) {
+          if (this.inst.isEditor) {
             vec3.transformMat4(vsum, vsum, modelScaleRotate)
           }
 
@@ -1076,19 +1033,7 @@ class GltfModelTop {
     const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
     const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
     const rotate = quat.create()
-    if (this.inst.cannonBody && this.inst.cannonSetRotation) {
-      quat.set(
-        rotate,
-        this.inst.cannonBody.quaternion.x,
-        this.inst.cannonBody.quaternion.y,
-        this.inst.cannonBody.quaternion.z,
-        this.inst.cannonBody.quaternion.w
-      )
-    } else if (this.inst.enableQuaternion) {
-      quat.copy(rotate, this.inst.quaternion)
-    } else {
-      quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-    }
+    quat.fromEuler(rotate, xAngle, yAngle, zAngle)
     mat4.fromRotationTranslationScale(this.modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
   }
 

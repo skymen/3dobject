@@ -30,23 +30,11 @@
       this.minBB = [0, 0, 0]
       this.maxBB = [0, 0, 0]
       this.updateBbox = true
-      this.gltfData = null
-      this.instanceModel = false
-      this.texture = {}
-      this.dataLoaded = false
-      this.whiteTexture = null
-      this.instanceTexture = false
-      this.wi = this.GetWorldInfo()
-      this.cannonBody = null
-      this.cannonSetRotation = false
       this.xMinBB = [0, 0, 0]
       this.xMaxBB = [0, 0, 0]
       this.bboxScale = 1
       this.animationNameFinished = ""
-      this.cpuXform = false
       this.totalTriangles = 0
-      this.quaternion = [0, 0, 0, 1]
-      this.enableQuaternion = false
       this.staticGeometry = false
       this.gpuSkinning = false
       this.animationOffset = 0
@@ -60,11 +48,16 @@
       this._lastZ = 0
 
       if (properties) {
+        // Runtime property indices (the editor "link" property is not present here,
+        // so indices are shifted by one vs plugin.js). Frozen for project
+        // compatibility — several ids no longer match their meaning:
+        //   [1]  "z-elevation"  — obsolete, ignored (historically misread as cpuXform)
+        //   [5]  "rotation-order" — stored but not honored at runtime
+        //   [9]  "instance-model", [10] "image-texture", [14] "wireframe" — features
+        //        removed in the UTRS trim; values ignored
+        //   [16] id "cpu-xform", labeled "Worker BFC" — historically backFaceCull;
+        //        the light-culling consumer was removed, value ignored
         this.scale = properties[0]
-        const wi = inst.GetWorldInfo()
-        // wi.SetZElevation(properties[1]);
-        // wi._UpdateZElevation();
-        this.cpuXform = properties[1]
         this.xAngle = properties[2]
         this.yAngle = properties[3]
         this.zAngle = properties[4]
@@ -72,14 +65,10 @@
         this.gltfPath = properties[6]
         this.debug = properties[7]
         this.animationBlend = properties[8]
-        this.instanceModel = properties[9]
-        this.instanceTexture = properties[10]
         this.xScale = properties[11]
         this.yScale = properties[12]
         this.zScale = properties[13]
-        // properties[14] (wireframe) removed in the UTRS trim
         this.workerAnimation = properties[15]
-        this.backFaceCull = properties[16]
         this.useBoneBoundingBox = properties[17] !== false // Default to true
         if (properties[18] === true) {
           // GPU skinning known at creation: bones-only worker payload, static geometry path
@@ -90,52 +79,34 @@
 
       this.localCenter = [0, 0, 0]
 
-      // Initialization, once per group of instances unless model data specified per instance
-      if (this.instanceModel) {
-        this.gltfData = new globalThis.GltfData(this.runtime, this)
-        if (this.gltfPath != "path" && this.gltfPath != "") {
-          this.gltfData.load(this.gltfPath, true, this.debug)
-        }
-      } else {
+      // Model data is loaded once per object type (shared via the cross-type cache)
+      {
         let sdkType = this.sdkType
         if (sdkType.initOwner == -1) {
           sdkType.initOwner = this.uid
-          if (this.gltfPath != "path" && this.gltfPath != "") {
+          if (this.gltfPath && this.gltfPath != "path") {
             sdkType.gltfData.load(this.gltfPath, true, this.debug)
           }
         }
       }
 
       this._StartTicking()
-      const wi = this.GetWorldInfo()
     }
 
     async doInit() {
       const wi = this.GetWorldInfo()
-      if (this.instanceModel) {
-        if (this.workerAnimation) {
-          this.gltf = new globalThis.GltfModelW(this._runtime, this, this)
-        } else {
-          this.gltf = new globalThis.GltfModel(this._runtime, this, this)
-        }
+      if (this.workerAnimation) {
+        this.gltf = new globalThis.GltfModelW(this._runtime, this.sdkType, this)
       } else {
-        if (this.workerAnimation) {
-          this.gltf = new globalThis.GltfModelW(this._runtime, this.sdkType, this)
-        } else {
-          this.gltf = new globalThis.GltfModel(this._runtime, this.sdkType, this)
-        }
+        this.gltf = new globalThis.GltfModel(this._runtime, this.sdkType, this)
       }
       await this.gltf.init()
       // Instance may have been destroyed while init was awaiting
       if (this._released) return
 
       // If needed load textures
-      let textures = this.instanceModel ? this.texture : this.sdkType.texture
-      let whiteTextureOwner = this.instanceModel ? this : this.sdkType
-      let gltfData = this.instanceModel ? this.gltfData : this.sdkType.gltfData
-      let renderer = this.renderer
-      if (gltfData.dynamicTexturesLoaded !== true) {
-        this.sdkType.LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner, this.instanceModel)
+      if (this.sdkType.gltfData.dynamicTexturesLoaded !== true) {
+        this.sdkType.LoadDynamicTextures(this.renderer, this.sdkType.gltfData, this.sdkType.texture, this.sdkType)
       }
 
       this.loaded = true
@@ -186,7 +157,7 @@
       }
 
       if (!this.loaded) {
-        if ((!this.instanceModel && this.sdkType.dataLoaded) || (this.instanceModel && this.dataLoaded)) {
+        if (this.sdkType.dataLoaded) {
           if (!this.doingInit) {
             this.doingInit = true
             this.doInit().catch((err) => {
@@ -223,15 +194,6 @@
           this.updateBbox = true
         }
       }
-      if (this.cannonBody) {
-        const wi = this.wi
-        wi.SetXY(this.cannonBody.position.x, this.cannonBody.position.y)
-        wi.SetZElevation(this.cannonBody.position.z)
-        wi._UpdateZElevation()
-        this.quaternion = this.cannonBody.quaternion
-        this.runtime.UpdateRender()
-        this.updateBbox = true
-      }
 
       // Update transformed bounding box (xMinBB/xMaxBB) even when offscreen
       // This ensures bbox values are always up-to-date for visibility testing
@@ -244,12 +206,7 @@
 
         // Update modelRotate matrix first
         this.gltf.updateModelRotate(x, y, z)
-
-        if (this.cpuXform) {
-          this._updateBoundingBoxCPU(x, y, z)
-        } else {
-          this._updateBoundingBox(x, y, z, this.gpuSkinning)
-        }
+        this._updateBoundingBox(x, y, z, this.gpuSkinning)
         wi.SetBboxChanged()
         this.updateBbox = false
       }
@@ -283,21 +240,15 @@
       // z elevation handles offset on draw
       const z = wi.GetTotalZElevation()
 
-      let textures = this.instanceModel ? this.texture : this.sdkType.texture
-      let whiteTextureOwner = this.instanceModel ? this : this.sdkType
-      let gltfData = this.instanceModel ? this.gltfData : this.sdkType.gltfData
-
-      if (!gltfData) {
-        // Source destroyed, destroy this instance
-        this.runtime.DestroyInstance(this.GetInstance())
-        return
-      }
+      const textures = this.sdkType.texture
+      const gltfData = this.sdkType.gltfData
 
       if (gltfData.dynamicTexturesLoaded !== true) {
-        this.sdkType.LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner, this.instanceModel)
+        this.sdkType.LoadDynamicTextures(renderer, gltfData, textures, this.sdkType)
       }
 
-      if (textures.length === 0 || this.instanceTexture) {
+      if (Object.keys(textures).length === 0) {
+        // Model has no materials: fall back to the object's image texture
         renderer.SetTexture(texture)
       }
 
@@ -323,10 +274,9 @@
             y,
             z,
             tempQuad,
-            whiteTextureOwner.whiteTexture,
+            this.sdkType.whiteTexture,
             wi.GetPremultipliedColor(),
             textures,
-            this.instanceTexture,
             wi.GetOpacity()
           )
         } finally {
@@ -334,27 +284,11 @@
         }
 
         if (this.updateBbox) {
-          if (this.cpuXform) {
-            this._updateBoundingBoxCPU(x, y, z)
-          } else {
-            this._updateBoundingBox(x, y, z, this.gpuSkinning)
-          }
-
+          this._updateBoundingBox(x, y, z, this.gpuSkinning)
           wi.SetBboxChanged()
           this.updateBbox = false
         }
       }
-    }
-
-    _updateBoundingBoxCPU(x, y, z) {
-      const wi = this.GetWorldInfo()
-      let width = this.maxBB[0] - this.minBB[0]
-      let height = this.maxBB[1] - this.minBB[1]
-      height = height == 0 ? 1 : height
-      width = width == 0 ? 1 : width
-      wi.SetSize(width, height)
-      wi.SetOriginX(-(this.minBB[0] - x) / width)
-      wi.SetOriginY(-(this.minBB[1] - y) / height)
     }
 
     initBoundingBox() {
@@ -487,20 +421,8 @@
 
     Release() {
       this._released = true
-      const textureNames = Object.keys(this.texture)
-      if (textureNames.length > 0) {
-        for (const textureName of textureNames) {
-          this.renderer.DeleteTexture(this.texture[textureName])
-        }
-      }
-      if (this.whiteTexture) {
-        this.renderer.DeleteTexture(this.whiteTexture)
-      }
       if (this.gltf) {
         this.gltf.release()
-      }
-      if (this.instanceModel && this.gltfData && typeof this.gltfData.release === "function") {
-        this.gltfData.release()
       }
       this.sdkType = null
       this.runtime = null
@@ -526,17 +448,9 @@
       this.minBB = null
       this.maxBB = null
       this.updateBbox = null
-      this.gltfData = null
-      this.instanceModel = null
-      this.texture = null
-      this.dataLoaded = null
-      this.whiteTexture = null
-      this.cannonBody = null
-      this.cannonSetRotation = null
       this.bboxScale = null
       this.workerAnimation = null
       this.gltf = null
-      this.quaternion = null
       this.animationOffset = null
       super.Release()
     }
@@ -592,24 +506,6 @@
       this.updateBbox = true
     }
 
-    _setCannonBody(body, setRotaion) {
-      this.cannonBody = body
-      this.cannonSetRotation = setRotaion
-    }
-
-    _removeCannonBody() {
-      this.cannonBody = null
-      this.cannonSetRotation = false
-    }
-
-    _setBBoxScale(scale) {
-      this.bboxScale = scale
-    }
-
-    _getModel() {
-      return this.gltf.gltfData
-    }
-
     _setXAngle(angle) {
       this.xAngle = angle
       this.runtime.UpdateRender()
@@ -654,33 +550,6 @@
       this.animationBlend = time
     }
 
-    _enableQuaternion(enable) {
-      this.enableQuaternion = enable
-      this.renderOnce = true
-    }
-
-    _setQuaternion(quaternion, x, y, z) {
-      // try catch JSON parse string quaternion, if not a string, ignore, if not a valid quaternion, ignore with warning
-      try {
-        const newQuaternion = JSON.parse(quaternion)
-        if (newQuaternion instanceof Array && newQuaternion.length == 4) {
-          this.quaternion = newQuaternion
-          this.renderOnce = true
-        } else {
-          console.warn("Set Quaternion - Invalid quaternion", quaternion)
-        }
-      } catch (err) {
-        console.warn("Set Quaternion - Invalid quaternion", quaternion)
-      }
-      if (x !== 0 || y !== 0 || z !== 0) {
-        const glMatrix3D = globalThis.glMatrix3D
-        const quat = glMatrix3D.quat
-        const rotateQuat = quat.create()
-        quat.fromEuler(rotateQuat, x, y, z)
-        quat.mul(this.quaternion, this.quaternion, rotateQuat)
-      }
-    }
-
     GetScriptInterfaceClass() {
       // @ts-ignore
       return self.I3DObjectInstance
@@ -701,10 +570,6 @@
       this.sdk_instance = map.get(this)
     }
 
-    setCannonBody(body, setRotaion = true) {
-      map.get(this)._setCannonBody(body, setRotaion)
-    }
-
     getNodePointPosition(nodeName, pointIndex) {
       const vec3 = globalThis.glMatrix3D.vec3
       let rotatedPoint = [0, 0, 0]
@@ -721,14 +586,6 @@
       )
       vec3.transformMat4(rotatedPoint, point, mapThis.gltf.modelRotate)
       return rotatedPoint
-    }
-
-    removeCannonBody() {
-      map.get(this)._removeCannonBody()
-    }
-
-    get model() {
-      return map.get(this)._getModel()
     }
 
     set xAngle(angle) {

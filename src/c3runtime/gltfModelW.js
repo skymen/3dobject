@@ -437,7 +437,7 @@ class GltfModelWTop {
     // matrices, so all instances of the type share one worker (and one copy of the
     // model data). Otherwise each instance gets a dedicated worker so CPU vertex
     // skinning still runs in parallel across instances (original behavior).
-    this.useSharedWorker = !this.inst.instanceModel && !!this.inst.gpuSkinning
+    this.useSharedWorker = !!this.inst.gpuSkinning
     if (this.useSharedWorker) {
       const sdkType = this._sdkType
       if (!sdkType.animWorkerHost) sdkType.animWorkerHost = new GltfWorkerHostTop()
@@ -682,7 +682,7 @@ class GltfModelWTop {
     if (locHasVertexColors) gl.uniform1f(locHasVertexColors, 1.0) // Reset to C3 default (use vertex colors)
   }
 
-  render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, instanceTexture, opacity) {
+  render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {
     if (opacity === 0) return
     renderer.EndBatch()
     let currentColor = [-1, -1, -1, -1]
@@ -712,7 +712,7 @@ class GltfModelWTop {
 
     const tmpModelView = mat4.create()
     const modelRotate = mat4.create()
-    if (!(this.inst.isEditor || this.inst.cpuXform)) {
+    if (!this.inst.isEditor) {
       mat4.copy(tmpModelView, renderer._matMV)
       const xAngle = this.inst.xAngle
       const yAngle = this.inst.yAngle
@@ -721,19 +721,7 @@ class GltfModelWTop {
       const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
       const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
       const rotate = quat.create()
-      if (this.inst.cannonBody && this.inst.cannonSetRotation) {
-        quat.set(
-          rotate,
-          this.inst.cannonBody.quaternion.x,
-          this.inst.cannonBody.quaternion.y,
-          this.inst.cannonBody.quaternion.z,
-          this.inst.cannonBody.quaternion.w
-        )
-      } else if (this.inst.enableQuaternion) {
-        quat.copy(rotate, this.inst.quaternion)
-      } else {
-        quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-      }
+      quat.fromEuler(rotate, xAngle, yAngle, zAngle)
       mat4.fromRotationTranslationScale(modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
       mat4.copy(this.modelRotate, modelRotate)
       mat4.multiply(modelRotate, tmpModelView, modelRotate)
@@ -786,7 +774,7 @@ class GltfModelWTop {
         }
       }
 
-      if (!instanceTexture) {
+      {
         if (!hasTexture) {
           if (currentTexture != whiteTexture) {
             renderer.SetTexture(whiteTexture)
@@ -874,7 +862,7 @@ class GltfModelWTop {
     }
 
     // Restore modelview matrix
-    if (!(this.inst.isEditor || this.inst.cpuXform)) {
+    if (!this.inst.isEditor) {
       renderer.SetModelViewMatrix(tmpModelView)
     }
     this.inst.totalTriangles = totalTriangles
@@ -1312,19 +1300,7 @@ class GltfModelWTop {
     const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
     const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
     const rotate = quat.create()
-    if (this.inst.cannonBody && this.inst.cannonSetRotation) {
-      quat.set(
-        rotate,
-        this.inst.cannonBody.quaternion.x,
-        this.inst.cannonBody.quaternion.y,
-        this.inst.cannonBody.quaternion.z,
-        this.inst.cannonBody.quaternion.w
-      )
-    } else if (this.inst.enableQuaternion) {
-      quat.copy(rotate, this.inst.quaternion)
-    } else {
-      quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-    }
+    quat.fromEuler(rotate, xAngle, yAngle, zAngle)
     mat4.fromRotationTranslationScale(this.modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
   }
 

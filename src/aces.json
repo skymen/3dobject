@@ -37,18 +37,6 @@
         ]
       },
       {
-        "id": "set-z-height",
-        "scriptName": "SetZHeight",
-        "highlight": false,
-        "params": [
-          {
-            "id": "z-height",
-            "type": "number",
-            "initialValue": "0"
-          }
-        ]
-      },
-      {
         "id": "set-scale",
         "scriptName": "SetScale",
         "highlight": true,
@@ -128,102 +116,6 @@
             "id": "z-scale",
             "type": "number",
             "initialValue": "1"
-          }
-        ]
-      },
-      {
-        "id": "update-bbox",
-        "scriptName": "UpdateBbox",
-        "highlight": false,
-        "params": []
-      },
-      {
-        "id": "set-origin-x",
-        "scriptName": "SetOriginX",
-        "highlight": false,
-        "isDeprecated": true,
-        "params": [
-          {
-            "id": "origin-x",
-            "type": "number",
-            "initialValue": "0.5"
-          }
-        ]
-      },
-      {
-        "id": "set-origin-y",
-        "scriptName": "SetOriginY",
-        "highlight": false,
-        "isDeprecated": true,
-        "params": [
-          {
-            "id": "origin-y",
-            "type": "number",
-            "initialValue": "1"
-          }
-        ]
-      },
-      {
-        "id": "set-bbox-scale",
-        "scriptName": "SetBBoxScale",
-        "highlight": false,
-        "isDeprecated": false,
-        "params": [
-          {
-            "id": "scale",
-            "type": "number",
-            "initialValue": "1"
-          }
-        ]
-      },
-      {
-        "id": "set-use-bone-bounding-box",
-        "scriptName": "SetUseBoneBoundingBox",
-        "highlight": false,
-        "params": [
-          {
-            "id": "enable",
-            "type": "boolean",
-            "initialValue": "true"
-          }
-        ]
-      },
-      {
-        "id": "set-quaternion",
-        "scriptName": "SetQuaternion",
-        "highlight": false,
-        "params": [
-          {
-            "id": "quaternion",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "offset-x",
-            "type": "number",
-            "initialValue": 0
-          },
-          {
-            "id": "offset-y",
-            "type": "number",
-            "initialValue": 0
-          },
-          {
-            "id": "offset-z",
-            "type": "number",
-            "initialValue": 0
-          }
-        ]
-      },
-      {
-        "id": "enable-quaternion",
-        "scriptName": "EnableQuaternion",
-        "highlight": false,
-        "params": [
-          {
-            "id": "enable",
-            "type": "boolean",
-            "initialValue": "false"
           }
         ]
       }
@@ -385,18 +277,6 @@
     ],
     "actions": [
       {
-        "id": "load-model",
-        "scriptName": "LoadModel",
-        "highlight": false,
-        "params": [
-          {
-            "id": "gltf-path",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
         "id": "enable-node",
         "scriptName": "EnableNode",
         "highlight": false,
@@ -426,18 +306,6 @@
         "params": []
       },
       {
-        "id": "load-model-from-template",
-        "scriptName": "LoadModelFromTemplate",
-        "highlight": false,
-        "params": [
-          {
-            "id": "template-uid",
-            "type": "number",
-            "initialValue": 0
-          }
-        ]
-      },
-      {
         "id": "set-static-geometry",
         "scriptName": "SetStaticGeometry",
         "highlight": false,
@@ -446,43 +314,6 @@
             "id": "enable",
             "type": "boolean",
             "initialValue": "false"
-          }
-        ]
-      },
-      {
-        "id": "set-target-to-position",
-        "scriptName": "SetTargetToPosition",
-        "highlight": false,
-        "params": [
-          {
-            "id": "x",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "y",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "z",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "up-x",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "up-y",
-            "type": "number",
-            "initialValue": "1"
-          },
-          {
-            "id": "up-z",
-            "type": "number",
-            "initialValue": "0"
           }
         ]
       }
@@ -685,12 +516,6 @@
   },
   "animations": {
     "conditions": [
-      {
-        "id": "is-animation-finished",
-        "scriptName": "IsAnimationFinished",
-        "isInvertible": true,
-        "highlight": false
-      },
       {
         "id": "on-animation-finished",
         "scriptName": "OnAnimationFinished",
