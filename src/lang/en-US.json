@@ -485,30 +485,6 @@
             "translated-name": "UseBoneBoundingBox",
             "params": {}
           },
-          "node-point-position": {
-            "description": "Node point position, as JSON string, {x:<number>,y:<number>,z:<number>}.",
-            "translated-name": "NodePointPosition",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name."
-              },
-              "point-index": {
-                "name": "Point index",
-                "desc": "Point index."
-              }
-            }
-          },
-          "node-vertex-length": {
-            "description": "Length of the nodes meshs vertex array.",
-            "translated-name": "NodeVertexLength",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name."
-              }
-            }
-          },
           "animation-blend-time": {
             "description": "Animation blend time in seconds.",
             "translated-name": "AnimationBlendTime",
