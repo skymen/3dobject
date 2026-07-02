@@ -5,11 +5,8 @@
 let msgPort = null
 let buff = null
 let buffBones = null
-let buffLights = null
 let drawVerts = null
 let drawBones = null
-let drawLights = null
-let drawLightsBufferViews = []
 let index = 0
 let gltf = null
 let minBB = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]
@@ -273,19 +270,6 @@ function OnMessage(e) {
   }
 }
 
-function packRGBA(r, g, b, a) {
-  // Convert floats to 8-bit integers
-  var red = Math.floor(r * 255)
-  var green = Math.floor(g * 255)
-  var blue = Math.floor(b * 255)
-  var alpha = Math.floor(a * 255)
-
-  // Pack RGBA values into a 32-bit integer
-  var packedRGBA = (alpha << 24) | (blue << 16) | (green << 8) | red
-
-  return packedRGBA
-}
-
 function release() {
   self.removeEventListener("message", initEventListeners)
   if (msgPort) {
@@ -294,11 +278,8 @@ function release() {
   }
   buff = null
   buffBones = null
-  buffLights = null
   drawVerts = null
   drawBones = null
-  drawLights = null
-  drawLightsBufferViews = []
   // @ts-ignore
   index = null
   gltf = null
@@ -342,8 +323,6 @@ let lastIndex = 0
 function updateAnimationPolygons(data) {
   const animationData = data.animationData
   const editorData = data.editorData
-  const lightEnable = editorData.lightEnable
-  const lightUpdate = editorData.lightUpdate
   const gpuSkinning = editorData.gpuSkinning
 
   updateAnimation(animationData)
@@ -355,76 +334,40 @@ function updateAnimationPolygons(data) {
   if (animationData.onScreen) {
     drawVerts[drawVerts.length - 1] = editorData.tick
     setBBInVerts(drawVerts, minBB, maxBB)
-    if (lightEnable && lightUpdate && !gpuSkinning) updateLight(editorData)
     if (gpuSkinning) {
       // XXX Don't need to pass back buff
       let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
       msgPort.postMessage(msg, [msg.buffBones, msg.buff])
       buffBones = null
     } else {
-      // Only ship the light buffer when it was computed this tick
-      const sendLights = lightEnable && lightUpdate
-      let msg = {
-        buff,
-        activeNodes,
-        buffLights: sendLights ? buffLights : null,
-        drawLightsBufferViews,
-        drawLightsEnable: lightEnable,
-        lightUpdate,
-        iid: replyIid,
-      }
-      msgPort.postMessage(msg, sendLights ? [msg.buff, msg.buffLights] : [msg.buff])
-      if (sendLights) {
-        buffLights = null
-        drawLights = null
-      }
+      let msg = { buff, activeNodes, iid: replyIid }
+      msgPort.postMessage(msg, [msg.buff])
     }
     drawVerts = null
-    drawLightsBufferViews = []
   } else {
     // No need to transfer data, worker us ready for next request
     const msg = { type: "status", status: { workerReady: true }, buff, iid: replyIid }
     msgPort.postMessage(msg, [msg.buff])
     drawVerts = null
-    buffLights = null
-    drawLightsBufferViews = []
-    drawLights = null
   }
 }
 
 function getPolygons(data) {
   const editorData = data.editorData
-  const lightEnable = editorData.lightEnable
-  const lightUpdate = editorData.lightUpdate
   const gpuSkinning = editorData.gpuSkinning
   getPolygonsPrep(editorData)
   // Post buffer to messagePort
   // Last float in array will be tick that requested the update
   drawVerts[drawVerts.length - 1] = editorData.tick
   setBBInVerts(drawVerts, minBB, maxBB)
-  if (lightEnable && lightUpdate && !gpuSkinning) updateLight(editorData)
   if (gpuSkinning) {
     let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
     msgPort.postMessage(msg, [msg.buffBones, msg.buff])
     buffBones = null
   } else {
-    const sendLights = lightEnable && lightUpdate
-    let msg = {
-      buff,
-      activeNodes,
-      buffLights: sendLights ? buffLights : null,
-      drawLightsBufferViews,
-      drawLightsEnable: lightEnable,
-      lightUpdate,
-      iid: replyIid,
-    }
-    msgPort.postMessage(msg, sendLights ? [msg.buff, msg.buffLights] : [msg.buff])
-    if (sendLights) {
-      buffLights = null
-      drawLights = null
-    }
+    let msg = { buff, activeNodes, iid: replyIid }
+    msgPort.postMessage(msg, [msg.buff])
   }
-  drawLightsBufferViews = []
 }
 
 function setBBInVerts(verts, minBBox, maxBBox) {
@@ -623,14 +566,6 @@ function getPolygonsPrep(editorData) {
   const quat = glMatrix.quat
   const gpuSkinning = editorData.gpuSkinning
   drawVerts = new Float32Array(buff)
-  // One light per triangle; only allocated when lighting actually needs it,
-  // reusing the buffer when it wasn't transferred away
-  if (editorData.lightEnable && !gpuSkinning) {
-    if (!buffLights || buffLights.byteLength !== buffLength * 4) {
-      buffLights = new ArrayBuffer(buffLength * 4)
-    }
-    drawLights = new Uint32Array(buffLights)
-  }
   if (gpuSkinning) {
     // buffBones is ping-ponged with the main thread like buff; reallocate only if lost
     if (!buffBones || buffBones.byteLength !== buffBonesLength * 4) {
@@ -899,229 +834,6 @@ function morphTargetsXform(vin, index, weights, targets) {
     vec3.scaleAndAdd(vout, vout, v, w)
   }
   return vout
-}
-
-function calculateLight(
-  v0,
-  v1,
-  v2,
-  normal,
-  viewDir,
-  colorSum,
-  c,
-  modelRotate,
-  lights,
-  viewPos,
-  ambientColor,
-  cullEnable
-) {
-  // @ts-ignore
-  const vec3 = glMatrix.vec3
-  // @ts-ignore
-  const vec4 = glMatrix.vec4
-
-  vec3.transformMat4(v0, v0, modelRotate)
-  vec3.transformMat4(v1, v1, modelRotate)
-  vec3.transformMat4(v2, v2, modelRotate)
-  vec3.set(c, v0[0], v0[1], v0[2])
-  vec3.add(c, c, v1)
-  vec3.add(c, c, v2)
-  vec3.div(c, c, [3, 3, 3])
-
-  if (cullEnable) {
-    const cull = backfaceCullCCW(v0, v1, v2)
-    if (cull) return [0, 0, 0, 0]
-  }
-
-  vec3.cross(normal, [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]], [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]])
-
-  vec3.normalize(normal, normal)
-  vec4.set(colorSum, 0, 0, 0, 0)
-  for (const light of Object.values(lights)) {
-    if (!light.enable) continue
-    const l = light.pos
-    const enableSpot = light.enableSpot
-    const enableSpecular = light.enableSpecular
-    const spotDir = light.spotDir
-    const cutoff = light.cutoff
-    const edge = light.edge
-    const color = light.color
-    const lightDir = vec3.fromValues(c[0] - l[0], c[1] - l[1], c[2] - l[2])
-    const distance = vec3.length(lightDir)
-    const attConstant = light.attConstant
-    const attLinear = light.attLinear
-    const attSquare = light.attSquare
-    vec3.normalize(lightDir, lightDir)
-    let dot = vec3.dot(normal, lightDir) * 0.5 + 0.5
-    let att = 1.0
-    let specular = 0.0
-    if (enableSpot) {
-      const spotDirN = vec3.clone(spotDir)
-      vec3.normalize(spotDirN, spotDir)
-      att = vec3.dot(spotDirN, lightDir)
-      if (att < cutoff) {
-        att = smoothstep(cutoff * (1 - edge), cutoff, att)
-      } else {
-        att = 1.0
-      }
-    }
-    if (enableSpecular && false) {
-      vec3.sub(viewDir, viewPos, c)
-      vec3.normalize(viewDir, viewDir)
-      const reflectDir = vec3.create()
-      const dotNI = vec3.create()
-      vec3.dot(dotNI, normal, lightDir)
-      vec3.scale(dotNI, dotNI, 2.0)
-      vec3.mul(dotNI, dotNI, normal)
-      vec3.sub(reflectDir, dotNI, lightDir)
-      // I - 2.0 * dot(N, I) * N.
-      vec3.sub(reflectDir, lightDir, normal)
-      vec3.normalize(reflectDir, reflectDir)
-      const spec = Math.pow(Math.max(vec3.dot(reflectDir, viewDir), 0.0), light.specularPower)
-      specular = light.specularAtt * spec
-    }
-    att = att / (1.0 * attConstant + distance * attLinear + distance * distance * attSquare)
-    att = att + specular
-    dot = dot * dot * att
-    vec4.add(colorSum, colorSum, [dot * color[0], dot * color[1], dot * color[2], dot * color[3]])
-  }
-  // Add ambient color to colorSum
-  vec4.add(colorSum, colorSum, ambientColor)
-  // Clamp color
-  colorSum[0] = colorSum[0] < 0.0 ? 0.0 : colorSum[0] > 1.0 ? 1.0 : colorSum[0]
-  colorSum[1] = colorSum[1] < 0.0 ? 0.0 : colorSum[1] > 1.0 ? 1.0 : colorSum[1]
-  colorSum[2] = colorSum[2] < 0.0 ? 0.0 : colorSum[2] > 1.0 ? 1.0 : colorSum[2]
-  // colorSum[3] = colorSum[3] < 0.0 ? 0.0 : colorSum[3] > 1.0 ? 1.0 : colorSum[3]
-  colorSum[3] = 1
-
-  return colorSum
-}
-
-function backfaceCullCCW(v0, v1, v2) {
-  if ((v1[0] - v0[0]) * (v2[1] - v1[1]) - (v1[1] - v0[1]) * (v2[0] - v1[0]) <= 0) return false
-  return true
-}
-
-function updateLight(editorData) {
-  // @ts-ignore
-  const vec3 = glMatrix.vec3
-  // @ts-ignore
-  const vec4 = glMatrix.vec4
-  // @ts-ignore
-  const mat4 = glMatrix.mat4
-  // @ts-ignore
-  const quat = glMatrix.quat
-
-  const cannonBody = { quaternion: quat.create() }
-  const cannonSetRotation = false
-
-  const xScale = editorData.xScale
-  const yScale = editorData.yScale
-  const zScale = editorData.zScale
-
-  const xAngle = editorData.xAngle
-  const yAngle = editorData.yAngle
-  const zAngle = editorData.zAngle
-
-  const x = editorData.x
-  const y = editorData.y
-  const z = editorData.z
-
-  const viewPos = editorData.viewPos
-  const ambientColor = editorData.ambientColor
-  const lights = editorData.lights
-
-  const cullEnable = editorData.cullEnable
-
-  typedVertsToDrawVerts()
-
-  // XXX Handle cannonBody and cannonSetRotation for light
-  if (cannonSetRotation && cannonBody) {
-    quat.set(rotate, cannonBody.quaternion.x, cannonBody.quaternion.y, cannonBody.quaternion.z, cannonBody.quaternion.w)
-  } else {
-    quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-  }
-
-  // Need to manually create for lighting, since usually done in shader
-  const localCenter = editorData.localCenter || [0, 0, 0]
-  mat4.fromRotationTranslationScaleOrigin(modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale], localCenter)
-
-  const length = drawVerts.length
-  // Calculate for each triangle
-  let lightIndex = 0
-  drawLightsBufferViews.length = 0
-  for (let j = 0; j < drawMeshes.length; j++) {
-    // XXX Skip lighting if disabled
-    const drawLightsBufferStart = lightIndex
-    const drawMeshVerts = drawMeshes[j].drawVerts
-    const drawIndices = drawMeshes[j].drawIndices
-
-    for (let ii = 0; ii < drawMeshVerts.length; ii++) {
-      let v = drawMeshVerts[ii]
-      let ind = drawIndices[ii]
-
-      let triangleCount = ind.length / 3
-      for (let i = 0; i < triangleCount; i++) {
-        let i3 = i * 3
-        let x0, y0, z0, x1, y1, z1, x2, y2, z2
-
-        x0 = v[ind[i3 + 0] * 3 + 0]
-        y0 = v[ind[i3 + 0] * 3 + 1]
-        z0 = v[ind[i3 + 0] * 3 + 2]
-        x1 = v[ind[i3 + 1] * 3 + 0]
-        y1 = v[ind[i3 + 1] * 3 + 1]
-        z1 = v[ind[i3 + 1] * 3 + 2]
-        x2 = v[ind[i3 + 2] * 3 + 0]
-        y2 = v[ind[i3 + 2] * 3 + 1]
-        z2 = v[ind[i3 + 2] * 3 + 2]
-
-        vec3.set(v0, x0, y0, z0)
-        vec3.set(v1, x1, y1, z1)
-        vec3.set(v2, x2, y2, z2)
-
-        // Vertex transformed by calculatLight
-        const colorSum = calculateLight(
-          v0,
-          v1,
-          v2,
-          normal,
-          viewDir,
-          colorSumCalc,
-          c,
-          modelRotate,
-          lights,
-          viewPos,
-          ambientColor,
-          cullEnable
-        )
-
-        drawLights[lightIndex] = packRGBA(colorSum[0], colorSum[1], colorSum[2], colorSum[3])
-        lightIndex += 1
-      }
-    }
-    drawLightsBufferViews.push({ start: drawLightsBufferStart, length: lightIndex - drawLightsBufferStart })
-  }
-}
-
-function typedVertsToDrawVerts() {
-  for (let j = 0; j < drawMeshes.length; j++) {
-    const drawMeshVerts = drawMeshes[j].drawVerts
-    const bufferViews = drawMeshes[j].bufferViews
-    drawMeshVerts.length = 0
-    // XXX Skip inactive meshes if possible
-    for (let ii = 0; ii < bufferViews.length; ii++) {
-      const bufferView = bufferViews[ii]
-      let buffStart = bufferView.start
-
-      // Convert typed array to regular array
-      // to speed access to data, net win is 10-20%
-      const v = new Array(bufferView.length)
-      for (let a = 0; a < bufferView.length; a++) {
-        v[a] = drawVerts[buffStart + a]
-      }
-      drawMeshVerts.push(v)
-    }
-  }
 }
 
 function smoothstep(min, max, value) {
@@ -11537,11 +11249,3 @@ let rotationQuat = quat.create()
 let parentMatrix = mat4.create()
 let dummyMat4Out = mat4.create()
 const vout = vec3.create()
-const modelRotate = mat4.create()
-const v0 = vec3.create()
-const v1 = vec3.create()
-const v2 = vec3.create()
-const normal = vec3.create()
-const viewDir = vec3.create()
-const colorSumCalc = vec4.create()
-const c = vec4.create()

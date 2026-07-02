@@ -433,79 +433,6 @@
       }
       this.renderOnce = true
     },
-    SetViewPos(x, y, z) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
-      this.viewPos = [x, y, z]
-    },
-    EnableLight(enable, color) {
-      this.lightEnable = enable
-      this.renderOnce = true
-    },
-    UpdateLight(enable) {
-      this.lightUpdate = enable
-    },
-    AddLights(
-      name,
-      enable,
-      colorWord,
-      x,
-      y,
-      z,
-      enableSpot,
-      dirX,
-      dirY,
-      dirZ,
-      cutoff,
-      edge,
-      attConstant,
-      attLinear,
-      attSquare,
-      enableSpecular,
-      specularAtt,
-      specularPower
-    ) {
-      const r = this.getRValue(colorWord)
-      const g = this.getGValue(colorWord)
-      const b = this.getBValue(colorWord)
-      const a = this.getAValue(colorWord)
-      const color = [r, g, b, a]
-      const spotDir = [dirX, dirY, dirZ]
-      const pos = [x, y, z]
-      const cosTheta = Math.cos(((cutoff / 2) * Math.PI) / 180)
-      const cosThetaEdge = edge * cosTheta
-      this.lights[name] = {
-        enable,
-        color,
-        pos,
-        enableSpot,
-        spotDir,
-        cutoff: cosTheta,
-        edge: cosThetaEdge,
-        attConstant,
-        attLinear,
-        attSquare,
-        enableSpecular,
-        specularAtt,
-        specularPower,
-      }
-    },
-    DeleteLights(name) {
-      if (!(name in this.lights)) return
-      delete this.lights[name]
-    },
-    EnableLights(name, enable) {
-      if (!(name in this.lights)) return
-      this.lights[name].enable = enable
-    },
-    SetAmbientColor(colorWord) {
-      const r = this.getRValue(colorWord)
-      const g = this.getGValue(colorWord)
-      const b = this.getBValue(colorWord)
-      const a = this.getAValue(colorWord)
-      const color = [r, g, b, a]
-      this.ambientColor = color
-    },
     SetVertexRounding(round) {
       this.vertexScale = round == 0 ? 0 : 1 / round
     },
@@ -516,9 +443,6 @@
 
     EnableQuaternion(enable) {
       this._enableQuaternion(enable)
-    },
-    EnableFragLight(enable, enablePhong) {
-      this._enableFragLight(enable, enablePhong)
     },
     SetStaticGeometry(enable) {
       this.staticGeometry = enable

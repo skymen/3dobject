@@ -31,11 +31,6 @@ class GltfModelTop {
     this.released = false
   }
 
-  _smoothstep(min, max, value) {
-    var x = Math.max(0, Math.min(1, (value - min) / (max - min)))
-    return x * x * (3 - 2 * x)
-  }
-
   async init() {
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
     await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
@@ -112,7 +107,7 @@ class GltfModelTop {
 
     gl.uniformMatrix4fv(this.locUModelRotate, false, modelRotate)
     gl.uniform1f(this.locUModelRotateEnable, 1)
-    gl.uniform1f(this.locUPhongEnable, this.inst.fragLightPhong ? 1 : 0)
+    gl.uniform1f(this.locUPhongEnable, 0)
   }
 
   disableVertexShaderModelRotate(renderer) {
@@ -159,7 +154,6 @@ class GltfModelTop {
     let totalTriangles = 0
     let currentColor = [-1, -1, -1, -1]
     let currentTexture = null
-    const lightEnable = this.inst.lightEnable
     const rendererVertexData = renderer._vertexData
     const rendererTexcoordData = renderer._texcoordData
 
@@ -223,16 +217,6 @@ class GltfModelTop {
         this.inst.localCenter
       )
       mat4.copy(this.modelRotate, modelRotate)
-      // Create inverse transpose normal matrix from modelRotate
-      if (this.inst.fragLightPhong) {
-        mat4.invert(this.normalMatrix, this.modelRotate)
-        mat4.transpose(this.normalMatrix, this.normalMatrix)
-        const shaderProgram = renderer._batchState.currentShader._shaderProgram
-        this.locUNormalMatrix = globalThis.uniformCache.getLocation(renderer._gl, shaderProgram, "uNormalMatrix")
-        if (this.locUNormalMatrix) {
-          renderer._gl.uniformMatrix4fv(this.locUNormalMatrix, false, this.normalMatrix)
-        }
-      }
       mat4.multiply(modelRotate, tmpModelView, modelRotate)
       renderer.SetModelViewMatrix(modelRotate)
       this.setVertexShaderModelRotate(renderer, this.modelRotate)
@@ -252,7 +236,6 @@ class GltfModelTop {
 
       const drawUVs = this.drawMeshes[j].drawUVs
       const drawIndices = this.drawMeshes[j].drawIndices
-      const drawLights = this.drawMeshes[j].drawLights
       const material = this.drawMeshes[j].material
       const hasTexture =
         material && "pbrMetallicRoughness" in material && "baseColorTexture" in material.pbrMetallicRoughness
@@ -260,7 +243,6 @@ class GltfModelTop {
       const materialsModify = this.inst.materialsModify
       const offsetMaterial = materialsModify.has(material?.name) && materialsModify.get(material?.name)?.offsetUV
       const rotateMaterial = materialsModify.has(material?.name) && materialsModify.get(material?.name)?.rotateUV
-      const lightUpdate = this.inst.lightUpdate || drawLights.length == 0
       const vertexScale = this.inst.vertexScale
       let isSpriteTexture = false
       let rWidth = null
@@ -344,15 +326,7 @@ class GltfModelTop {
         mat2.fromRotation(rotateMatrix, rotateUV.angle)
       }
 
-      if (lightUpdate) {
-        drawLights.length = 0
-      }
-      let xVerts
-      if (this.inst.fragLight && this.inst.isWebGPU) {
-        xVerts = this.transformDrawVerts(drawVerts, this.modelRotate)
-      } else {
-        xVerts = drawVerts
-      }
+      const xVerts = drawVerts
 
       // Static geometry, draw from GPU buffers
       if (this.inst.staticGeometry) {
@@ -369,7 +343,7 @@ class GltfModelTop {
             this._sdkType.gltfData,
             rotateMaterial,
             offsetMaterial,
-            this.inst.fragLightPhong,
+            false, // phong lighting removed
             currentColor // Pass calculated color to draw method
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
@@ -486,9 +460,6 @@ class GltfModelTop {
           y2 = v[ind[i3 + 2] * 3 + 1]
           z2 = v[ind[i3 + 2] * 3 + 2] - z
 
-          let colorSum
-          if (lightUpdate) colorSum = vec4.create()
-
           if (this.inst.wireframe) {
             this.drawWireFrame(
               renderer,
@@ -508,93 +479,9 @@ class GltfModelTop {
               zWireframeWidth
             )
           } else {
-            if (lightEnable && lightUpdate) {
-              const normal = vec3.create()
-              const viewDir = vec3.create()
-              const v0 = vec3.fromValues(x0, y0, z0 + z)
-              const v1 = vec3.fromValues(x1, y1, z1 + z)
-              const v2 = vec3.fromValues(x2, y2, z2 + z)
+            // Set base color
+            renderer.SetColorRgba(currentColor[0], currentColor[1], currentColor[2], currentColor[3])
 
-              vec3.transformMat4(v0, v0, this.modelRotate)
-              vec3.transformMat4(v1, v1, this.modelRotate)
-              vec3.transformMat4(v2, v2, this.modelRotate)
-              const c = vec3.clone(v0)
-              vec3.add(c, c, v1)
-              vec3.add(c, c, v2)
-              vec3.div(c, c, [3, 3, 3])
-
-              vec3.cross(
-                normal,
-                [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]],
-                [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]]
-              )
-              vec3.normalize(normal, normal)
-
-              for (const light of Object.values(this.inst.lights)) {
-                if (!light.enable) continue
-                const l = light.pos
-                const enableSpot = light.enableSpot
-                const enableSpecular = light.enableSpecular
-                const spotDir = light.spotDir
-                const cutoff = light.cutoff
-                const edge = light.edge
-                const color = light.color
-                const lightDir = vec3.fromValues(c[0] - l[0], c[1] - l[1], c[2] - l[2])
-                const distance = vec3.length(lightDir)
-                const attConstant = light.attConstant
-                const attLinear = light.attLinear
-                const attSquare = light.attSquare
-                vec3.normalize(lightDir, lightDir)
-                let dot = vec3.dot(normal, lightDir) * 0.5 + 0.5
-                let att = 1.0
-                let specular = 0.0
-                if (enableSpot) {
-                  const spotDirN = vec3.clone(spotDir)
-                  vec3.normalize(spotDirN, spotDir)
-                  att = vec3.dot(spotDirN, lightDir)
-                  if (att < cutoff) {
-                    att = this._smoothstep(cutoff * (1 - edge), cutoff, att)
-                  } else {
-                    att = 1.0
-                  }
-                }
-                if (enableSpecular) {
-                  vec3.sub(viewDir, this.inst.viewPos, c)
-                  vec3.normalize(viewDir, viewDir)
-                  const reflectDir = vec3.create()
-                  const dotNI = vec3.create()
-                  vec3.dot(dotNI, normal, lightDir)
-                  vec3.scale(dotNI, dotNI, 2.0)
-                  vec3.mul(dotNI, dotNI, normal)
-                  vec3.sub(reflectDir, dotNI, lightDir)
-                  vec3.sub(reflectDir, lightDir, normal)
-                  vec3.normalize(reflectDir, reflectDir)
-                  const spec = Math.pow(Math.max(vec3.dot(reflectDir, viewDir), 0.0), light.specularPower)
-                  specular = light.specularAtt * spec
-                }
-                att = att / (1.0 * attConstant + distance * attLinear + distance * distance * attSquare)
-                att = att + specular
-                dot = dot * dot * att
-                vec4.add(colorSum, colorSum, [dot * color[0], dot * color[1], dot * color[2], dot * color[3]])
-              }
-              // Add ambient color to colorSum
-              vec4.add(colorSum, colorSum, this.inst.ambientColor)
-              // Clamp color
-              colorSum[0] = colorSum[0] < 0.0 ? 0.0 : colorSum[0] > 1.0 ? 1.0 : colorSum[0]
-              colorSum[1] = colorSum[1] < 0.0 ? 0.0 : colorSum[1] > 1.0 ? 1.0 : colorSum[1]
-              colorSum[2] = colorSum[2] < 0.0 ? 0.0 : colorSum[2] > 1.0 ? 1.0 : colorSum[2]
-              colorSum[3] = colorSum[3] < 0.0 ? 0.0 : colorSum[3] > 1.0 ? 1.0 : colorSum[3]
-
-              drawLights.push(colorSum)
-            }
-            if (lightEnable) {
-              const c = drawLights[i]
-              if (baseColorChanged) vec4.mul(c, c, currentColor)
-              renderer.SetColorRgba(c[0], c[1], c[2], 1)
-            } else {
-              // For dynamic geometry without lighting, set base color
-              renderer.SetColorRgba(currentColor[0], currentColor[1], currentColor[2], currentColor[3])
-            }
             if (vertexScale != 0) {
               const xScale = (this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)) * vertexScale
               const yScale = (this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)) * vertexScale
@@ -616,7 +503,7 @@ class GltfModelTop {
     }
 
     // Restore modelview matrix
-    if (!(this.inst.isEditor || this.inst.cpuXform) && !(this.inst.fragLight && this.inst.isWebGPU)) {
+    if (!(this.inst.isEditor || this.inst.cpuXform)) {
       renderer.SetModelViewMatrix(tmpModelView)
     }
     this.inst.totalTriangles = totalTriangles
@@ -754,7 +641,6 @@ class GltfModelTop {
             drawVertsOrig: [],
             drawUVs: [],
             drawIndices: [],
-            drawLights: [],
             drawColors: [],
             drawNormals: [],
             drawBones: [],
@@ -988,7 +874,6 @@ class GltfModelTop {
             drawIndices: [],
             drawColors: [],
             drawNormals: [],
-            drawLights: [],
             drawJoints: [],
             drawWeights: [],
             drawBones: [],
@@ -1151,28 +1036,6 @@ class GltfModelTop {
         }
       }
     }
-  }
-
-  transformDrawVerts(drawVerts, modelScaleRotate) {
-    const vec3 = globalThis.glMatrix3D.vec3
-    // Transform drawVerts in place
-    const xformVerts = []
-    const vOut = vec3.create()
-    for (let i = 0; i < drawVerts.length; i++) {
-      const v = drawVerts[i]
-      const xform = []
-      for (let j = 0; j < v.length; j += 3) {
-        const x = v[j]
-        const y = v[j + 1]
-        const z = v[j + 2]
-        vec3.set(vOut, x, y, z)
-
-        vec3.transformMat4(vOut, vOut, modelScaleRotate)
-        xform.push(vOut[0], vOut[1], vOut[2])
-      }
-      xformVerts.push(xform)
-    }
-    return xformVerts
   }
 
   // sends a list of animation names

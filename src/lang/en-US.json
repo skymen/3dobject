@@ -596,25 +596,6 @@
               }
             }
           },
-          "set-view-pos": {
-            "list-name": "Set view position",
-            "display-text": "Set view position to i]({0}, {1}, {2})[/i]",
-            "description": "Set view position for specular lighting.",
-            "params": {
-              "x": {
-                "name": "X",
-                "desc": "Set X view position."
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Set Y view position."
-              },
-              "z": {
-                "name": "Z",
-                "desc": "Set Z view position."
-              }
-            }
-          },
           "load-model-from-template": {
             "list-name": "Load model from prefab instance",
             "display-text": "Load model from prefab uid [i]{0}[/i]",
@@ -634,144 +615,6 @@
               "blend-time": {
                 "name": "Blend time",
                 "desc": "Blend time in seconds."
-              }
-            }
-          },
-          "enable-light": {
-            "list-name": "Enable lights",
-            "display-text": "Set lights enabled: {0}",
-            "description": "Enable lights",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable."
-              }
-            }
-          },
-          "update-light": {
-            "list-name": "Update light",
-            "display-text": "Update light {0}",
-            "description": "Update light.",
-            "params": {
-              "enable": {
-                "name": "Update",
-                "desc": "Update light."
-              }
-            }
-          },
-          "add-lights": {
-            "list-name": "Add light",
-            "display-text": "Add light [i]({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9}, {10}, {11}, {12}, {13}, {14}, {15}, {16}, {17})[/i]",
-            "description": "Add light.",
-            "params": {
-              "name": {
-                "name": "Name",
-                "desc": "Light name."
-              },
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable."
-              },
-              "color": {
-                "name": "Color",
-                "desc": "Color, use RgbEx()."
-              },
-              "x": {
-                "name": "X",
-                "desc": "X."
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Y."
-              },
-              "z": {
-                "name": "Z",
-                "desc": "Z."
-              },
-              "enable-spot": {
-                "name": "Enable spot",
-                "desc": "Enable spot light."
-              },
-              "dir-x": {
-                "name": "Dir X",
-                "desc": "Direction X."
-              },
-              "dir-y": {
-                "name": "Dir Y",
-                "desc": "Direction Y."
-              },
-              "dir-z": {
-                "name": "Dir Z",
-                "desc": "Direction Z."
-              },
-              "cutoff": {
-                "name": "Spot cone angle",
-                "desc": "Spot light cone angle."
-              },
-              "edge": {
-                "name": "Soft edge",
-                "desc": "Soft edge (0-1)."
-              },
-              "att-constant": {
-                "name": "Attenuation constant",
-                "desc": "Constant attenuation (1.0+)."
-              },
-              "att-linear": {
-                "name": "Attenuation linear",
-                "desc": "Linear distance attenuation."
-              },
-              "att-square": {
-                "name": "Attenuation square",
-                "desc": "Square distance attenuation."
-              },
-              "specular-enable": {
-                "name": "Specular enable",
-                "desc": "Enable specular light."
-              },
-              "specular-att": {
-                "name": "Specular attenuation",
-                "desc": "Attenuate specular light."
-              },
-              "specular-power": {
-                "name": "Specular shininess",
-                "desc": "Shiniess of specular light (1-128)."
-              }
-            }
-          },
-          "enable-lights": {
-            "list-name": "Enable light",
-            "display-text": "Set light [b]{0}[/b] enabled: {1}",
-            "description": "Enable light.",
-            "params": {
-              "name": {
-                "name": "Name",
-                "desc": "Light name."
-              },
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable light."
-              }
-            }
-          },
-          "delete-lights": {
-            "list-name": "Delete light",
-            "display-text": "Delete light [b]{0}[/b] ",
-            "description": "Delete light",
-            "params": {
-              "name": {
-                "name": "Name",
-                "desc": "Light name."
-              }
-            }
-          },
-          "set-ambient-color": {
-            "list-name": "Set ambient color",
-            "display-text": "Set ambient color [i]{0}[/i]",
-            "description": "Set ambient color",
-            "params": {
-              "color": {
-                "name": "Color",
-                "desc": "Color value, use rgbaEx()."
               }
             }
           },
@@ -862,21 +705,6 @@
               "enable": {
                 "name": "Enable",
                 "desc": "Enable quaternion for rotation."
-              }
-            }
-          },
-          "enable-frag-light": {
-            "list-name": "Enable fragment light mode",
-            "display-text": "Set fragment light mode enabled: [b]{0}[/b], phong: [b]{1}[/b]",
-            "description": "Enable fragment light mode for fragment light effect.",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable fragment light mode."
-              },
-              "enable-phong": {
-                "name": "Enable Phong",
-                "desc": "Enable phong lighting, requires model normals."
               }
             }
           },
@@ -1137,21 +965,6 @@
             "translated-name": "AnimationBlendTime",
             "params": {}
           },
-          "light-color": {
-            "description": "Light color value.",
-            "translated-name": "LightColor",
-            "params": {
-              "name": {
-                "name": "name",
-                "desc": "Color name."
-              }
-            }
-          },
-          "lights-data": {
-            "description": "Lights data as JSON string.",
-            "translated-name": "LightsData",
-            "params": {}
-          },
           "animation-speed": {
             "description": "Animation speed.",
             "translated-name": "AnimationSpeed",
@@ -1160,11 +973,6 @@
           "total-triangles": {
             "description": "Total triangles to be rendered.",
             "translated-name": "TotalTriangles",
-            "params": {}
-          },
-          "total-triangles-culled": {
-            "description": "Total triangles culled.",
-            "translated-name": "TotalTrianglesCulled",
             "params": {}
           },
           "node-bounding-box": {

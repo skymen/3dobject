@@ -88,9 +88,6 @@ class GltfModelWTop {
     this.bones = new Float32Array(0)
     this.updateDrawVerts = false
     this.activeNodes = []
-    this.drawLights = new Uint32Array(0)
-    this.drawLightsBufferViews = null
-    this.drawLightsEnable = false
     this.workerReady = false
     this.boundingBoxInit = false
     this.boneBufferViews = []
@@ -193,11 +190,6 @@ class GltfModelWTop {
     // @ts-ignore
     this.activeNodes = null
     // @ts-ignore
-    this.drawLights = null
-    // @ts-ignore
-    this.drawLightsBufferViews = null
-    // @ts-ignore
-    this.drawLightsEnable = null
     // @ts-ignore
     this.workerReady = null
     // @ts-ignore
@@ -208,8 +200,6 @@ class GltfModelWTop {
     this.buffNodesMat = null
     // @ts-ignore
     this.nodesMat = null
-    // @ts-ignore
-    this.buffLights = null
     // @ts-ignore
     this.boneBufferViews = null
     // @ts-ignore
@@ -294,31 +284,6 @@ class GltfModelWTop {
     for (let ii = 0; ii < gltf.skinnedNodes.length; ii++) {
       this.scanNode(gltf.skinnedNodes[ii], true)
     }
-  }
-
-  transformDrawVerts(drawVerts, modelScaleRotate) {
-    const vec3 = globalThis.glMatrix3D.vec3
-    // Transform drawVerts in place
-    const xformVerts = []
-    const vOut = vec3.create()
-    for (let i = 0; i < drawVerts.length; i++) {
-      const v = drawVerts[i]
-      const xform = []
-      for (let j = 0; j < v.length; j += 3) {
-        const x = v[j]
-        const y = v[j + 1]
-        const z = v[j + 2]
-        vec3.set(vOut, x, y, z)
-
-        vec3.transformMat4(vOut, vOut, modelScaleRotate)
-        // v[j] = vOut[0];
-        // v[j + 1] = vOut[1];
-        // v[j + 2] = vOut[2];
-        xform.push(vOut[0], vOut[1], vOut[2])
-      }
-      xformVerts.push(xform)
-    }
-    return xformVerts
   }
 
   scanNode(node, scanSkin, gpuSkinning) {
@@ -411,12 +376,6 @@ class GltfModelWTop {
       if (!gpuSkinning) {
         this.buff = e.data.buff
         this.verts = new Float32Array(this.buff)
-        if (e.data.lightUpdate) {
-          this.buffLights = e.data.buffLights
-          this.drawLights = new Uint32Array(this.buffLights)
-          this.drawLightsBufferViews = e.data.drawLightsBufferViews
-        }
-        this.drawLightsEnable = e.data.drawLightsEnable
         this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
         this.inst.updateBbox = true
         this.updateDrawVerts = true
@@ -692,7 +651,7 @@ class GltfModelWTop {
 
     gl.uniformMatrix4fv(this.locUModelRotate, false, modelRotate)
     gl.uniform1f(this.locUModelRotateEnable, 1)
-    gl.uniform1f(this.locUPhongEnable, this.inst.fragLightPhong ? 1 : 0)
+    gl.uniform1f(this.locUPhongEnable, 0)
   }
 
   disableVertexShaderModelRotate(renderer) {
@@ -752,7 +711,6 @@ class GltfModelWTop {
     const quat = globalThis.glMatrix3D.quat
     const vertexScale = this.inst.vertexScale
     let totalTriangles = 0
-    let totalTrianglesCulled = 0
 
     let xWireframeWidth, yWireframeWidth, zWireframeWidth
 
@@ -800,16 +758,6 @@ class GltfModelWTop {
       }
       mat4.fromRotationTranslationScale(modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
       mat4.copy(this.modelRotate, modelRotate)
-      // Create inverse transpose normal matrix from modelRotate
-      if (this.inst.fragLightPhong) {
-        mat4.invert(this.normalMatrix, this.modelRotate)
-        mat4.transpose(this.normalMatrix, this.normalMatrix)
-        const shaderProgram = renderer._batchState.currentShader._shaderProgram
-        this.locUNormalMatrix = globalThis.uniformCache.getLocation(renderer._gl, shaderProgram, "uNormalMatrix")
-        if (this.locUNormalMatrix) {
-          renderer._gl.uniformMatrix4fv(this.locUNormalMatrix, false, this.normalMatrix)
-        }
-      }
       mat4.multiply(modelRotate, tmpModelView, modelRotate)
       renderer.SetModelViewMatrix(modelRotate)
       this.setVertexShaderModelRotate(renderer, this.modelRotate)
@@ -829,12 +777,6 @@ class GltfModelWTop {
       renderer._texPtr = 0
     }
     for (let j = 0; j <= this.drawMeshesIndex; j++) {
-      let lightIndex, drawLightsBufferView
-      if (this.drawLightsEnable) {
-        drawLightsBufferView = this.drawLightsBufferViews[j]
-        lightIndex = drawLightsBufferView.start
-      }
-
       // Skip render if disabled
       if (this.drawMeshes[j].disabled) continue
 
@@ -896,12 +838,7 @@ class GltfModelWTop {
         mat2.fromRotation(rotateMatrix, rotateUV.angle)
       }
 
-      let xVerts
-      if (this.inst.fragLight && this.inst.isWebGPU) {
-        xVerts = this.transformDrawVerts(drawVerts, this.modelRotate)
-      } else {
-        xVerts = drawVerts
-      }
+      const xVerts = drawVerts
 
       if (this.inst.staticGeometry || this.inst.gpuSkinning) {
         const objectBuffers = this.drawMeshes[j].objectBuffers
@@ -918,7 +855,7 @@ class GltfModelWTop {
             this._sdkType.gltfData, // Pass the GltfData class instance
             rotateMaterial,
             offsetMaterial,
-            this.inst.fragLightPhong,
+            false, // phong lighting removed
             currentColor // Pass calculated color to draw method
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
@@ -939,15 +876,6 @@ class GltfModelWTop {
         let center = [0, 0, 0]
         totalTriangles += triangleCount
         for (let i = 0; i < triangleCount; i++) {
-          if (this.drawLightsEnable && this.inst.backFaceCull) {
-            const c = this.unpackRGBA(this.drawLights[lightIndex])
-            if (c[3] == 0) {
-              lightIndex++
-              totalTrianglesCulled++
-              continue
-            }
-          }
-
           if (hasTexture) {
             if (offsetMaterial || rotateMaterial) {
               // create new arrays for the UVs
@@ -1068,12 +996,6 @@ class GltfModelWTop {
               zWireframeWidth
             )
           } else {
-            if (this.drawLightsEnable) {
-              const c = this.unpackRGBA(this.drawLights[lightIndex])
-              lightIndex++
-              if (baseColorChanged) vec4.mul(c, c, currentColor)
-              renderer.SetColorRgba(c[0], c[1], c[2], 1)
-            }
             renderer.Quad3D2(x0, y0, z0, x1, y1, z1, x2, y2, z2, x2, y2, z2, tempQuad)
           }
         }
@@ -1081,12 +1003,10 @@ class GltfModelWTop {
     }
 
     // Restore modelview matrix
-    if (!(this.inst.isEditor || this.inst.cpuXform) && !(this.inst.fragLight && this.inst.isWebGPU)) {
+    if (!(this.inst.isEditor || this.inst.cpuXform)) {
       renderer.SetModelViewMatrix(tmpModelView)
-      // if (this.inst.fragLight && !this.inst.isWebGPU) renderer.SetProjectionMatrix(tmpProjection)
     }
     this.inst.totalTriangles = totalTriangles
-    this.inst.totalTrianglesCulled = totalTrianglesCulled
     // Restore renderer buffers
     renderer._vertexData = rendererVertexData
     renderer._texcoordData = rendererTexcoordData
@@ -1195,17 +1115,6 @@ class GltfModelWTop {
     }
   }
 
-  unpackRGBA(packedRGBA) {
-    // Extract individual RGBA components from the packed value
-    var red = (packedRGBA & 0xff) / 255
-    var green = ((packedRGBA >> 8) & 0xff) / 255
-    var blue = ((packedRGBA >> 16) & 0xff) / 255
-    var alpha = ((packedRGBA >> 24) & 0xff) / 255
-    const color = [red, green, blue, alpha]
-
-    return color
-  }
-
   /*
         Updates a node's matrix and all it's children nodes.
         After that it transforms unskinned mesh points and sends them to c2.
@@ -1254,7 +1163,7 @@ class GltfModelWTop {
     )
   }
 
-  getEditorData(isEditor, lightEnable, lightUpdate, gpuSkinning) {
+  getEditorData(isEditor, gpuSkinning) {
     const tick = this._runtime.GetTickCount()
     let editorData = { tick: tick, isEditor: isEditor, gpuSkinning }
     if (isEditor) {
@@ -1285,56 +1194,12 @@ class GltfModelWTop {
         z,
         tick,
         isEditor,
-        lightEnable: false,
         cullEnable,
         gpuSkinning,
         localCenter: this.inst.localCenter,
       }
     }
 
-    if (lightEnable) {
-      const wi = this.inst.GetWorldInfo()
-
-      const xAngle = this.inst.xAngle
-      const yAngle = this.inst.yAngle
-      const zAngle = this.inst.zAngle
-
-      const x = wi.GetX()
-      const y = wi.GetY()
-      const z = wi.GetZElevation()
-
-      const xScale = this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)
-      const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
-      const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
-
-      const lights = this.inst.lights
-      const ambientColor = this.inst.ambientColor
-      const viewPos = this.inst.viewPos
-
-      const cullEnable = this.inst.backFaceCull
-
-      // Send to worker with postMessage in case in editor
-      editorData = {
-        xScale,
-        yScale,
-        zScale,
-        xAngle,
-        yAngle,
-        zAngle,
-        x,
-        y,
-        z,
-        tick,
-        isEditor,
-        lights,
-        ambientColor,
-        viewPos,
-        lightEnable: true,
-        cullEnable,
-        lightUpdate,
-        gpuSkinning,
-      }
-    }
     return editorData
   }
 
@@ -1344,7 +1209,7 @@ class GltfModelWTop {
 
     this.drawMeshesIndex = -1
 
-    const editorData = this.getEditorData(this.inst.isEditor, this.inst.lightEnable, this.inst.lightUpdate, gpuSkinning)
+    const editorData = this.getEditorData(this.inst.isEditor, gpuSkinning)
 
     // update all scene matrixes.
     // only update drawMesh meta data, vertex data will be updated in the worker
@@ -1585,10 +1450,6 @@ class GltfModelWTop {
       z0 + zWidth,
       tempQuad
     )
-  }
-
-  getLightData() {
-    return this.inst.lights
   }
 
   updateAnimationPolygons(index, time, onScreen, deltaTime, staticGeometry, gpuSkinning = false) {

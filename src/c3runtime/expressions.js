@@ -249,25 +249,11 @@
     AnimationBlendTime() {
       return this.animationBlend
     },
-    LightColor(name) {
-      if (!this.gltf) return 0
-      if (!this.gltf.gltfData) return 0
-      if (!(name in this.lights)) return 0
-      const c = this.lights[name].color
-      const packRGBA = this.packRGBAEx(c[0], c[1], c[2], c[3])
-      return packRGBA
-    },
-    LightsData() {
-      return JSON.stringify(this.lights)
-    },
     AnimationSpeed(speed) {
       return this.animationSpeed
     },
     TotalTriangles() {
       return this.totalTriangles
-    },
-    TotalTrianglesCulled() {
-      return this.totalTrianglesCulled
     },
     UseBoneBoundingBox() {
       return this.useBoneBoundingBox ? 1 : 0
