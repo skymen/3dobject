@@ -17,13 +17,153 @@ let minBB = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE
 let maxBB = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY]
 let buffLength = 0
 let buffBonesLength = 0
-const disabledNodes = new Map()
-const nodeMorphWeights = new Map()
+let disabledNodes = new Map()
+let nodeMorphWeights = new Map()
 let activeNodes = []
 let nodeIndex = 0
 let bonesIndex = 0
 let nodeMatsIndex = 0
 let drawMeshes = null
+// Whether vertex attribute data (positions/weights/joints/morph targets) is present.
+// GPU-skinning instances send length stubs instead; real data arrives on demand
+// via an "attributes" message if a CPU-skinning request comes in.
+let attributesLoaded = true
+
+// Per-instance state. A worker either serves a single instance (legacy mode: one
+// record under DEFAULT_IID referencing the received graph directly) or is shared by
+// all instances of an object type (records created per "addInstance", each with its
+// own mutable node graph over the shared immutable data).
+const DEFAULT_IID = "__default"
+const instances = new Map()
+let sharedGltf = null
+let currentRecord = null
+let replyIid = undefined
+
+function freshInstanceState() {
+  return {
+    blendState: "init",
+    lastTarget: [[], []],
+    lastTargetIndex: 0,
+    blendTarget: [],
+    blendTime: 0,
+    lastIndex: 0,
+    disabledNodes: new Map(),
+    nodeMorphWeights: new Map(),
+  }
+}
+
+// Clone the mutable scene-graph state (node transforms, joint matrices, morph
+// weights) from the shared graph; meshes, attribute data and keyframes are shared
+function createRecordFromShared() {
+  const src = sharedGltf
+  const nodeMap = new Map()
+  const nodes = (src.nodes || []).map((n) => {
+    const c = { ...n }
+    if (n.translation) c.translation = n.translation.slice()
+    if (n.rotation) c.rotation = n.rotation.slice()
+    if (n.scale) c.scale = n.scale.slice()
+    if (n.matrix) c.matrix = n.matrix.slice()
+    if (n.invMatrix) c.invMatrix = n.invMatrix.slice()
+    if (n.weights) c.weights = new Float32Array(n.weights)
+    if (n.boneMatrix) c.boneMatrix = n.boneMatrix.slice()
+    nodeMap.set(n, c)
+    return c
+  })
+  for (const n of src.nodes || []) {
+    const c = nodeMap.get(n)
+    if (n.children) c.children = n.children.map((x) => nodeMap.get(x) || x)
+    if (n.skin) c.skin = { joints: n.skin.joints.map((j) => nodeMap.get(j) || j) }
+  }
+  const animations = (src.animations || []).map((a) => ({
+    name: a.name,
+    channels: a.channels.map((ch) => ({
+      sampler: ch.sampler,
+      target: { path: ch.target.path, node: nodeMap.get(ch.target.node) || ch.target.node },
+    })),
+  }))
+  const record = freshInstanceState()
+  record.gltf = {
+    nodes,
+    meshes: src.meshes,
+    animations,
+    scene: { nodes: ((src.scene && src.scene.nodes) || []).map((n) => nodeMap.get(n) || n) },
+    skinnedNodes: (src.skinnedNodes || []).map((n) => nodeMap.get(n) || n),
+  }
+  return record
+}
+
+// Point the module-level state at a record so the processing functions below can
+// stay unchanged; message handling is synchronous, so this never interleaves
+function activateInstance(iid) {
+  const record = instances.get(iid === undefined ? DEFAULT_IID : iid)
+  if (!record) return false
+  currentRecord = record
+  gltf = record.gltf
+  blendState = record.blendState
+  lastTarget[0] = record.lastTarget[0]
+  lastTarget[1] = record.lastTarget[1]
+  lastTargetIndex = record.lastTargetIndex
+  blendTarget = record.blendTarget
+  blendTime = record.blendTime
+  lastIndex = record.lastIndex
+  disabledNodes = record.disabledNodes
+  nodeMorphWeights = record.nodeMorphWeights
+  return true
+}
+
+function deactivateInstance() {
+  const record = currentRecord
+  if (!record) return
+  record.blendState = blendState
+  record.lastTarget[0] = lastTarget[0]
+  record.lastTarget[1] = lastTarget[1]
+  record.lastTargetIndex = lastTargetIndex
+  record.blendTarget = blendTarget
+  record.blendTime = blendTime
+  record.lastIndex = lastIndex
+  currentRecord = null
+}
+
+// Replace attribute length stubs ({dataLength}) with objects exposing .length so
+// bookkeeping code (index += posData.length, loop bounds) works without the data
+function normalizeAttributeStubs() {
+  if (!sharedGltf || !sharedGltf.meshes) return
+  attributesLoaded = true
+  for (const mesh of sharedGltf.meshes) {
+    if (!mesh || !mesh.primitives) continue
+    for (const p of mesh.primitives) {
+      const attrs = p.attributes || {}
+      for (const key of ["POSITION", "WEIGHTS_0", "JOINTS_0"]) {
+        const attr = attrs[key]
+        if (attr && attr.data == null) {
+          attr.data = { length: attr.dataLength }
+          if (key === "POSITION") attributesLoaded = false
+        }
+      }
+    }
+  }
+}
+
+function patchAttributes(meshes) {
+  if (!sharedGltf || !sharedGltf.meshes) return
+  for (let k = 0; k < meshes.length; k++) {
+    const target = sharedGltf.meshes[k]
+    if (!target) continue
+    for (let j = 0; j < meshes[k].primitives.length; j++) {
+      const src = meshes[k].primitives[j]
+      const dst = target.primitives[j]
+      if (!dst) continue
+      dst.attributes = dst.attributes || {}
+      for (const key of ["POSITION", "WEIGHTS_0", "JOINTS_0"]) {
+        if (src[key]) dst.attributes[key] = { data: src[key] }
+      }
+      if (src.targets) {
+        dst.targets = src.targets.map((data) => ({ POSITION: { data } }))
+      }
+    }
+  }
+  attributesLoaded = true
+}
 
 function initEventListeners(e) {
   if (e.data && e.data["type"] === "construct-worker-init") {
@@ -37,48 +177,97 @@ function initEventListeners(e) {
 self.addEventListener("message", initEventListeners)
 
 function OnMessage(e) {
+  replyIid = e.data.iid
   switch (e.data.type) {
     case "init":
       break
     case "gltf":
-      gltf = e.data.gltf
+      sharedGltf = e.data.gltf
       buffLength = e.data.buffLength
       buffBonesLength = e.data.buffBonesLength
       drawMeshes = e.data.drawMeshes
+      normalizeAttributeStubs()
+      if (!e.data.shared) {
+        // Legacy single-instance worker: one record mutating the received graph directly
+        const record = freshInstanceState()
+        record.gltf = sharedGltf
+        instances.set(DEFAULT_IID, record)
+      }
+      break
+    case "addInstance":
+      instances.set(e.data.iid, createRecordFromShared())
+      break
+    case "removeInstance":
+      instances.delete(e.data.iid)
+      break
+    case "attributes":
+      patchAttributes(e.data.meshes)
       break
     case "updateAnimationPolygons":
       buff = e.data.buff
+      if (e.data.buffBones) buffBones = e.data.buffBones
       if (e.data.debug) console.info("Update animation polygons")
+      if (e.data.data.animationData.onScreen && !e.data.data.editorData.gpuSkinning && !attributesLoaded) {
+        const msg = { type: "needAttributes", buff, iid: replyIid }
+        msgPort.postMessage(msg, [msg.buff])
+        break
+      }
+      if (!activateInstance(e.data.iid)) {
+        // Instance already removed; return the buffer so the sender isn't starved
+        const msg = { type: "status", status: { workerReady: true }, buff, iid: replyIid }
+        msgPort.postMessage(msg, [msg.buff])
+        break
+      }
       updateAnimationPolygons(e.data.data)
+      deactivateInstance()
       break
     case "getPolygons":
       buff = e.data.buff
+      if (e.data.buffBones) buffBones = e.data.buffBones
+      if (!e.data.data.editorData.gpuSkinning && !attributesLoaded) {
+        const msg = { type: "needAttributes", buff, iid: replyIid }
+        msgPort.postMessage(msg, [msg.buff])
+        break
+      }
+      if (!activateInstance(e.data.iid)) {
+        const msg = { type: "status", status: { workerReady: true }, buff, iid: replyIid }
+        msgPort.postMessage(msg, [msg.buff])
+        break
+      }
       getPolygons(e.data.data)
+      deactivateInstance()
       break
     case "release":
       release()
       self.close()
       break
     case "enableNode":
+      if (!activateInstance(e.data.iid)) break
       if (e.data.enable) {
         disabledNodes.delete(e.data.nodeName)
       } else {
         disabledNodes.set(e.data.nodeName, true)
       }
+      deactivateInstance()
       break
     case "setNodeMorphWeight": {
+      if (!activateInstance(e.data.iid)) break
       const nodeName = e.data.nodeName
       const index = e.data.index
       const weight = e.data.weight
       if (!nodeMorphWeights.has(nodeName)) nodeMorphWeights.set(nodeName, new Map())
       nodeMorphWeights.get(nodeName).set(index, weight)
+      deactivateInstance()
       break
     }
     case "deleteNodeMorphWeight": {
+      if (!activateInstance(e.data.iid)) break
       const nodeName = e.data.nodeName
       const index = e.data.index
-      if (!nodeMorphWeights.has(nodeName)) return
-      nodeMorphWeights.get(nodeName).delete(index)
+      if (nodeMorphWeights.has(nodeName)) {
+        nodeMorphWeights.get(nodeName).delete(index)
+      }
+      deactivateInstance()
       break
     }
     default:
@@ -125,6 +314,9 @@ function release() {
   buffBonesLength = null
   disabledNodes.clear()
   nodeMorphWeights.clear()
+  instances.clear()
+  sharedGltf = null
+  currentRecord = null
   // @ts-ignore
   activeNodes = null
   // @ts-ignore
@@ -176,19 +368,32 @@ function updateAnimationPolygons(data) {
     if (lightEnable && lightUpdate) updateLight(editorData)
     if (gpuSkinning) {
       // XXX Don't need to pass back buff
-      let msg = { activeNodes, buffBones, gpuSkinning: true, buff }
+      let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
       msgPort.postMessage(msg, [msg.buffBones, msg.buff])
+      buffBones = null
     } else {
-      let msg = { buff, activeNodes, buffLights, drawLightsBufferViews, drawLightsEnable: lightEnable, lightUpdate }
-      msgPort.postMessage(msg, [msg.buff, msg.buffLights])
+      // Only ship the light buffer when it was computed this tick
+      const sendLights = lightEnable && lightUpdate
+      let msg = {
+        buff,
+        activeNodes,
+        buffLights: sendLights ? buffLights : null,
+        drawLightsBufferViews,
+        drawLightsEnable: lightEnable,
+        lightUpdate,
+        iid: replyIid,
+      }
+      msgPort.postMessage(msg, sendLights ? [msg.buff, msg.buffLights] : [msg.buff])
+      if (sendLights) {
+        buffLights = null
+        drawLights = null
+      }
     }
     drawVerts = null
-    buffLights = null
     drawLightsBufferViews = []
-    drawLights = null
   } else {
     // No need to transfer data, worker us ready for next request
-    const msg = { type: "status", status: { workerReady: true }, buff }
+    const msg = { type: "status", status: { workerReady: true }, buff, iid: replyIid }
     msgPort.postMessage(msg, [msg.buff])
     drawVerts = null
     buffLights = null
@@ -209,15 +414,27 @@ function getPolygons(data) {
   setBBInVerts(drawVerts, minBB, maxBB)
   if (lightEnable && lightUpdate) updateLight(editorData)
   if (gpuSkinning) {
-    let msg = { activeNodes, buffBones, gpuSkinning: true, buff }
+    let msg = { activeNodes, buffBones, gpuSkinning: true, buff, iid: replyIid }
     msgPort.postMessage(msg, [msg.buffBones, msg.buff])
+    buffBones = null
   } else {
-    let msg = { buff, activeNodes, buffLights, drawLightsBufferViews, drawLightsEnable: lightEnable, lightUpdate }
-    msgPort.postMessage(msg, [msg.buff, msg.buffLights])
+    const sendLights = lightEnable && lightUpdate
+    let msg = {
+      buff,
+      activeNodes,
+      buffLights: sendLights ? buffLights : null,
+      drawLightsBufferViews,
+      drawLightsEnable: lightEnable,
+      lightUpdate,
+      iid: replyIid,
+    }
+    msgPort.postMessage(msg, sendLights ? [msg.buff, msg.buffLights] : [msg.buff])
+    if (sendLights) {
+      buffLights = null
+      drawLights = null
+    }
   }
-  buffLights = null
   drawLightsBufferViews = []
-  drawLights = null
 }
 
 function setBBInVerts(verts, minBBox, maxBBox) {
@@ -420,15 +637,20 @@ function getPolygonsPrep(editorData) {
   // @ts-ignore
   const quat = glMatrix.quat
   const gpuSkinning = editorData.gpuSkinning
-  // New array buffer for each frame
-  // Extra data: minBB, maxBB, tick
-  // buff = new ArrayBuffer((buffLength+7)*4)
   drawVerts = new Float32Array(buff)
-  // One light per triangle
-  buffLights = new ArrayBuffer(buffLength * 4)
-  drawLights = new Uint32Array(buffLights)
+  // One light per triangle; only allocated when lighting actually needs it,
+  // reusing the buffer when it wasn't transferred away
+  if (editorData.lightEnable && !gpuSkinning) {
+    if (!buffLights || buffLights.byteLength !== buffLength * 4) {
+      buffLights = new ArrayBuffer(buffLength * 4)
+    }
+    drawLights = new Uint32Array(buffLights)
+  }
   if (gpuSkinning) {
-    buffBones = new ArrayBuffer(buffBonesLength * 4)
+    // buffBones is ping-ponged with the main thread like buff; reallocate only if lost
+    if (!buffBones || buffBones.byteLength !== buffBonesLength * 4) {
+      buffBones = new ArrayBuffer(buffBonesLength * 4)
+    }
     drawBones = new Float32Array(buffBones)
   }
   // drawVerts index
@@ -643,9 +865,9 @@ function transformNode(node, parentMat, modelScaleRotate, isEditor, gpuSkinning)
       activeNodes.push(nodeIndex)
       nodeIndex++
 
-      for (let j = 0; j < posData.length / 3; j++) {
-        if (gpuSkinning) continue
+      if (gpuSkinning) continue
 
+      for (let j = 0; j < posData.length / 3; j++) {
         let vin = posData.subarray(j * 3, j * 3 + 3)
         if (morphActive) {
           vin = morphTargetsXform(vin, j, morphWeights, morphTargets)

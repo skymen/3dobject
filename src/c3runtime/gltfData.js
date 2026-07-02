@@ -16,6 +16,10 @@ class GltfData {
   }
 
   release() {
+    if (this._dracoDecoder) {
+      this._dracoDecoder.dispose();
+      this._dracoDecoder = null;
+    }
     // Release gltf data structure contents
     if (this.gltf) {
       // Release buffers
@@ -188,6 +192,12 @@ class GltfData {
 
     // Determine bonesPerModelAsset after gltf is fully processed
     this._calculateBonesPerModelAsset();
+
+    // Draco decoding is done; terminate its worker pool (recreated on demand if needed)
+    if (this._dracoDecoder) {
+      this._dracoDecoder.dispose();
+      this._dracoDecoder = null;
+    }
 
     return true
   }
@@ -492,6 +502,19 @@ class GltfData {
 
     // Standard GLTF processing for non-Draco primitives (after Draco has been handled)
     await this._processStandardPrimitives(gltf)
+
+    // Compact accessors: accessor data are views over the whole GLB binary (including
+    // embedded image bytes already extracted above), which keeps the entire binary alive.
+    // Copy each view into its own compact buffer, then drop the source buffers.
+    // Must run before the skins block below, which creates subarrays of accessor data.
+    if (gltf.accessors) {
+      for (const a of gltf.accessors) {
+        if (a && a.data && a.data.buffer && a.data.byteLength < a.data.buffer.byteLength) {
+          a.data = a.data.slice()
+        }
+      }
+    }
+    gltf.buffers = null
 
     //skins
     if (gltf.skins) {
@@ -1330,6 +1353,120 @@ class GltfData {
     
     if (this._debug) console.warn('✅ EDITOR BYPASS: Successfully processed all primitives as standard GLTF')
     return true
+  }
+
+  /*
+    Creates a per-instance view of a loaded gltf: mutable scene-graph state (node transforms,
+    matrices, morph weights, material assignments, joint bone matrices) is cloned, while all
+    heavy immutable data (accessor typed arrays, animation keyframes, inverse bind matrices,
+    images) is shared by reference with the source. Replaces structuredClone of the whole
+    gltf, which duplicated the entire decoded model (and its underlying binary buffer) per
+    instance.
+  */
+  static cloneInstanceView(sourceGltf) {
+    const nodeMap = new Map()
+    const meshMap = new Map()
+    const materialMap = new Map()
+    const skinMap = new Map()
+
+    const cloneMaterial = (material) => {
+      if (material == null || typeof material !== "object") return material
+      if (materialMap.has(material)) return materialMap.get(material)
+      const copy = { ...material }
+      if (material.pbrMetallicRoughness) {
+        copy.pbrMetallicRoughness = { ...material.pbrMetallicRoughness }
+        const baseColor = material.pbrMetallicRoughness.baseColorFactor
+        // render() mutates baseColorFactor[3]; keep it per instance
+        if (Array.isArray(baseColor)) copy.pbrMetallicRoughness.baseColorFactor = baseColor.slice()
+      }
+      materialMap.set(material, copy)
+      return copy
+    }
+
+    const cloneMesh = (mesh) => {
+      if (mesh == null) return mesh
+      if (meshMap.has(mesh)) return meshMap.get(mesh)
+      const copy = {
+        ...mesh,
+        // attributes/indices/targets reference shared immutable accessors;
+        // material is per instance (SetMeshMaterial replaces it)
+        primitives: mesh.primitives.map((p) => {
+          const pc = { ...p }
+          if ("material" in p) pc.material = cloneMaterial(p.material)
+          return pc
+        }),
+      }
+      meshMap.set(mesh, copy)
+      return copy
+    }
+
+    const cloneSkin = (skin) => {
+      if (skin == null) return skin
+      if (skinMap.has(skin)) return skinMap.get(skin)
+      const copy = {
+        ...skin,
+        // joints rebound in the second pass (nodes may not all be cloned yet)
+        joints: skin.joints.slice(),
+      }
+      skinMap.set(skin, copy)
+      return copy
+    }
+
+    // Pass 1: clone every node's mutable state
+    const sourceNodes = sourceGltf.nodes || []
+    for (const node of sourceNodes) {
+      const copy = { ...node }
+      if (node.translation) copy.translation = Array.from(node.translation)
+      if (node.rotation) copy.rotation = Array.from(node.rotation)
+      if (node.scale) copy.scale = Array.from(node.scale)
+      if (node.matrix) copy.matrix = Array.from(node.matrix)
+      if (node.invMatrix) copy.invMatrix = Array.from(node.invMatrix)
+      if (node.weights) copy.weights = new Float32Array(node.weights)
+      if (node.boneMatrix) copy.boneMatrix = Array.from(node.boneMatrix)
+      // invBindMatrix is immutable — shared by reference (kept via {...node})
+      // boneBuffer/morphWeights are created lazily per instance; consumers use
+      // hasOwnProperty checks, so the keys must not exist on the clone
+      delete copy.boneBuffer
+      delete copy.morphWeights
+      nodeMap.set(node, copy)
+    }
+
+    // Pass 2: rebind graph references on the clones
+    for (const node of sourceNodes) {
+      const copy = nodeMap.get(node)
+      if (node.children) copy.children = node.children.map((c) => nodeMap.get(c) || c)
+      if (node.mesh) copy.mesh = cloneMesh(node.mesh)
+      if (node.skin) copy.skin = cloneSkin(node.skin)
+    }
+    for (const skinCopy of skinMap.values()) {
+      skinCopy.joints = skinCopy.joints.map((j) => nodeMap.get(j) || j)
+    }
+
+    const target = { ...sourceGltf }
+    target.buffers = null
+    target.imageBitmap = null
+    target.nodes = sourceNodes.map((n) => nodeMap.get(n))
+    target.skinnedNodes = (sourceGltf.skinnedNodes || []).map((n) => nodeMap.get(n) || n)
+    if (sourceGltf.scene) {
+      target.scene = { ...sourceGltf.scene, nodes: sourceGltf.scene.nodes.map((n) => nodeMap.get(n) || n) }
+    }
+    if (sourceGltf.scenes) {
+      target.scenes = sourceGltf.scenes.map((s) => ({ ...s, nodes: s.nodes.map((n) => nodeMap.get(n) || n) }))
+    }
+    if (sourceGltf.meshes) target.meshes = sourceGltf.meshes.map((m) => cloneMesh(m))
+    if (sourceGltf.materials) target.materials = sourceGltf.materials.map((m) => cloneMaterial(m))
+    if (sourceGltf.skins) target.skins = sourceGltf.skins.map((s) => cloneSkin(s))
+    if (sourceGltf.animations) {
+      target.animations = sourceGltf.animations.map((a) => ({
+        ...a,
+        // samplers (and their keyframe accessors) are shared; targets rebound to cloned nodes
+        channels: a.channels.map((c) => ({
+          ...c,
+          target: { ...c.target, node: nodeMap.get(c.target.node) || c.target.node },
+        })),
+      }))
+    }
+    return target
   }
 
   getOrCreateModelBoneUbo(renderer) {

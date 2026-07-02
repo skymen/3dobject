@@ -105,6 +105,10 @@
       if (!this.instanceModel && this.sdkType.dataLoaded) return
 
       if (this.instanceModel) {
+        // Free the previous per-instance model data before replacing it
+        if (this.gltfData && typeof this.gltfData.release === "function") {
+          this.gltfData.release()
+        }
         //@ts-ignore
         this.gltfData = new globalThis.GltfData(this.runtime, this)
         if (this.debug) console.info("gltfPath - ACE", gltfPath)
@@ -149,6 +153,8 @@
       const sampling = this.runtime.GetSampling()
       let options = { sampling: sampling }
 
+      // Free the previous texture if this material name is being replaced
+      if (textures[materialName]) renderer.DeleteTexture(textures[materialName])
       textures[materialName] = renderer.CreateDynamicTexture(width, height, options)
       await renderer.UpdateTexture(imageBitmap, textures[materialName])
       textures[materialName].materialPath = materialPath

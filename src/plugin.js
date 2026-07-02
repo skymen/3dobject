@@ -3,7 +3,7 @@
   const SDK = self.SDK
 
   const PLUGIN_ID = "Mikal_3DObject"
-  const PLUGIN_VERSION = "2.89.0"
+  const PLUGIN_VERSION = "2.90.0"
   const PLUGIN_CATEGORY = "3d"
 
   const PLUGIN_CLASS = (SDK.Plugins.Mikal_3DObject = class Object3DPlugin extends SDK.IPluginBase {
@@ -105,6 +105,9 @@
           interpolatable: false,
         }),
         new SDK.PluginProperty("check", "use-bone-bounding-box", true, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("check", "gpu-skinning", false, {
           interpolatable: false,
         }),
       ])

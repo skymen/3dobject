@@ -83,6 +83,7 @@
       this.animationOffset = 0
       this.allNodesDisabled = false
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
+      this._released = false
 
       // Track last position for detecting position changes
       this._lastX = 0
@@ -111,6 +112,11 @@
         this.workerAnimation = properties[15]
         this.backFaceCull = properties[16]
         this.useBoneBoundingBox = properties[17] !== false // Default to true
+        if (properties[18] === true) {
+          // GPU skinning known at creation: bones-only worker payload, static geometry path
+          this.gpuSkinning = true
+          this.staticGeometry = true
+        }
       }
 
       this.localCenter = [0, 0, 0]
@@ -151,6 +157,8 @@
         }
       }
       await this.gltf.init()
+      // Instance may have been destroyed while init was awaiting
+      if (this._released) return
 
       // If needed load textures
       let textures = this.instanceModel ? this.texture : this.sdkType.texture
@@ -215,7 +223,9 @@
         if ((!this.instanceModel && this.sdkType.dataLoaded) || (this.instanceModel && this.dataLoaded)) {
           if (!this.doingInit) {
             this.doingInit = true
-            this.doInit()
+            this.doInit().catch((err) => {
+              if (!this._released) console.error("[3DObject] doInit failed", err)
+            })
           }
         }
       }
@@ -516,6 +526,7 @@
     }
 
     Release() {
+      this._released = true
       const textureNames = Object.keys(this.texture)
       if (textureNames.length > 0) {
         for (const textureName of textureNames) {
@@ -527,6 +538,9 @@
       }
       if (this.gltf) {
         this.gltf.release()
+      }
+      if (this.instanceModel && this.gltfData && typeof this.gltfData.release === "function") {
+        this.gltfData.release()
       }
       this.sdkType = null
       this.runtime = null

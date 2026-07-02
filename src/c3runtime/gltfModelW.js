@@ -5,6 +5,62 @@ const BoneBufferW = globalThis.BoneBuffer
 // @ts-ignore
 const ObjectBufferW = globalThis.ObjectBuffer
 
+// One animation worker shared by all instances of an object type (used when GPU
+// skinning is known at creation time). Owns the message port and dispatches worker
+// replies to the registered GltfModelW instances by instance id.
+class GltfWorkerHostTop {
+  constructor() {
+    this.msgPort = null
+    this.instances = new Map()
+    this.portPromise = null
+    this.gltfSent = false
+    this.attributesSent = false
+    this.released = false
+  }
+
+  async getPort(runtime) {
+    if (!this.portPromise) {
+      this.portPromise = (async () => {
+        const path = await runtime.GetAssetManager().GetProjectFileUrl("gltfWorker.js")
+        if (this.released) return null
+        const port = await runtime._iRuntime.createWorker(path)
+        if (this.released) {
+          port.postMessage({ type: "release" })
+          port.close()
+          return null
+        }
+        this.msgPort = port
+        port.onmessage = (e) => {
+          const model = this.instances.get(e.data ? e.data.iid : undefined)
+          if (model) model.onWorkerMessage(e)
+        }
+        return port
+      })()
+    }
+    return this.portPromise
+  }
+
+  add(iid, model) {
+    this.instances.set(iid, model)
+  }
+
+  remove(iid) {
+    this.instances.delete(iid)
+    if (this.msgPort) this.msgPort.postMessage({ type: "removeInstance", iid })
+  }
+
+  release() {
+    this.released = true
+    if (this.msgPort) {
+      this.msgPort.postMessage({ type: "release" })
+      this.msgPort.onmessage = null
+      this.msgPort.close()
+      this.msgPort = null
+    }
+    this.instances.clear()
+  }
+}
+
 class GltfModelWTop {
   constructor(runtime, sdkType, inst) {
     const mat4 = globalThis.glMatrix3D.mat4
@@ -45,10 +101,20 @@ class GltfModelWTop {
     this.locUSkinEnable = null
     this.locUNodeXformEnable = null
     this.locUNormalMatrix = null
+    this.released = false
+    this.useSharedWorker = false
+    this._workerHost = null
+    this._iid = undefined
   }
 
   release() {
-    if (this.msgPort) {
+    this.released = true
+    if (this._workerHost) {
+      // Shared per-type worker: only unregister this instance
+      this._workerHost.remove(this._iid)
+      this._workerHost = null
+      this.msgPort = null
+    } else if (this.msgPort) {
       this.msgPort.postMessage({ type: "release" })
       this.msgPort.onmessage = null
       this.msgPort.close()
@@ -187,17 +253,17 @@ class GltfModelWTop {
   }
 
   copyGltfData(sourceGltf) {
-    // Create completely new object (no direct references to source)
-    const targetGltf = structuredClone(sourceGltf)
-    return targetGltf
+    // Per-instance view: mutable scene-graph state cloned, heavy immutable data shared
+    if (globalThis.GltfData && typeof globalThis.GltfData.cloneInstanceView === "function") {
+      return globalThis.GltfData.cloneInstanceView(sourceGltf)
+    }
+    return structuredClone(sourceGltf)
   }
 
   async init() {
-    // Deep copy
-    // For instance version, may only need points, others remain stable, full copy for now
-    this._sdkType.gltfData.gltf.buffers = null
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
     await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
+    if (this.released) return
     if ("buffers" in this.gltfData) {
       this.gltfData.buffers = null
     }
@@ -215,6 +281,7 @@ class GltfModelWTop {
     this.drawMeshesMin = this.drawMeshes
     this.createBoneBufferViews()
     await this.createWorker(this._runtime)
+    if (this.released) return
     this.workerReady = true
     this.getPolygons(this.inst.gpuSkinning)
   }
@@ -301,20 +368,23 @@ class GltfModelWTop {
         const drawWeights = this.drawMeshes[this.drawMeshesIndex].drawWeights
         const drawVertsOrig = this.drawMeshes[this.drawMeshesIndex].drawVertsOrig
 
+        // Attribute data is immutable and shared across instances; only copy when a
+        // type conversion is actually needed
+        const sharedOrCopy = (data, Type) => (data instanceof Type ? data : new Type(data))
         if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
-          drawUVs.push(new Float32Array(node.mesh.primitives[i].attributes.TEXCOORD_0.data))
+          drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
         }
         if (gpuSkinning && drawVertsOrig.length === 0 && "POSITION" in node.mesh.primitives[i].attributes) {
-          drawVertsOrig.push(new Float32Array(node.mesh.primitives[i].attributes.POSITION.data))
+          drawVertsOrig.push(sharedOrCopy(node.mesh.primitives[i].attributes.POSITION.data, Float32Array))
         }
         if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
-          drawColors.push(new Float32Array(node.mesh.primitives[i].attributes.COLOR_0.data))
+          drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
         }
         if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-          drawNormals.push(new Float32Array(node.mesh.primitives[i].attributes.NORMAL.data))
+          drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
         }
         if (gpuSkinning && drawJoints.length === 0 && "JOINTS_0" in node.mesh.primitives[i].attributes) {
-          const jointsData = new Uint16Array(node.mesh.primitives[i].attributes.JOINTS_0.data)
+          const jointsData = sharedOrCopy(node.mesh.primitives[i].attributes.JOINTS_0.data, Uint16Array)
           drawJoints.push(jointsData)
           // Calculate maxJointIndexUsed
           let maxIndex = -1
@@ -326,9 +396,9 @@ class GltfModelWTop {
           this.drawMeshes[this.drawMeshesIndex].maxJointIndexUsed = maxIndex
         }
         if (gpuSkinning && drawWeights.length === 0 && "WEIGHTS_0" in node.mesh.primitives[i].attributes) {
-          drawWeights.push(new Float32Array(node.mesh.primitives[i].attributes.WEIGHTS_0.data))
+          drawWeights.push(sharedOrCopy(node.mesh.primitives[i].attributes.WEIGHTS_0.data, Float32Array))
         }
-        if (drawIndices.length === 0) drawIndices.push(new Uint16Array(node.mesh.primitives[i].indices.data))
+        if (drawIndices.length === 0) drawIndices.push(sharedOrCopy(node.mesh.primitives[i].indices.data, Uint16Array))
       }
     }
     if (node.children) {
@@ -338,86 +408,271 @@ class GltfModelWTop {
     }
   }
 
-  async createWorker(runtime) {
-    // Create the worker with the runtime.createWorker() method.
-    // This must be awaited and resolves with a messagePort.
-    let path = await runtime.GetAssetManager().GetProjectFileUrl("gltfWorker.js")
-    this.msgPort = await runtime._iRuntime.createWorker(path)
-    // Add an onmessage handler to receive message
-    this.msgPort.onmessage = (e) => {
-      if (!e.data.type) {
-        this.activeNodes = e.data.activeNodes
-        const gpuSkinning = this.inst.gpuSkinning
-        if (!gpuSkinning) {
-          this.buff = e.data.buff
-          this.verts = new Float32Array(this.buff)
-          if (e.data.lightUpdate) {
-            this.buffLights = e.data.buffLights
-            this.drawLights = new Uint32Array(this.buffLights)
-            this.drawLightsBufferViews = e.data.drawLightsBufferViews
-          }
-          this.drawLightsEnable = e.data.drawLightsEnable
-          this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
-          this.inst.updateBbox = true
-          this.updateDrawVerts = true
-          this.typedVertsToDrawVerts(this.inst.staticGeometry)
-        } else {
-          this.buff = e.data.buff
-          this.buffBones = e.data.buffBones
-          this.buffNodesMat = e.data.buffNodeMats
-          this.nodesMat = new Float32Array(this.buffNodesMat)
-          this.bones = new Float32Array(this.buffBones)
-          // this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
-          const x = this.inst.isEditor ? this.inst._inst.GetX() : this.inst.GetWorldInfo().GetX()
-          const y = this.inst.isEditor ? this.inst._inst.GetY() : this.inst.GetWorldInfo().GetY()
-          const z = this.inst.isEditor ? this.inst._inst.GetZElevation() : this.inst.GetWorldInfo().GetZElevation()
-          this.inst.minBB = [-10000 + x, -10000 + y, -10000 + z]
-          this.inst.maxBB = [10000 + x, 10000 + y, 10000 + z]
-          this.inst.updateBbox = true
-          this.updateDrawVerts = true
-          this.typedBonesToDrawBones()
-        }
-        this.workerReady = true
-        if (!this.boundingBoxInit) {
-          this.inst.initBoundingBox()
-          this.boundingBoxInit = true
-        }
-      } else if (e.data.type === "status") {
+  onWorkerMessage(e) {
+    if (!e.data.type) {
+      this.activeNodes = e.data.activeNodes
+      const gpuSkinning = this.inst.gpuSkinning
+      if (!gpuSkinning) {
         this.buff = e.data.buff
-        if (e.data?.status?.workerReady) {
-          this.workerReady = true
+        this.verts = new Float32Array(this.buff)
+        if (e.data.lightUpdate) {
+          this.buffLights = e.data.buffLights
+          this.drawLights = new Uint32Array(this.buffLights)
+          this.drawLightsBufferViews = e.data.drawLightsBufferViews
         }
+        this.drawLightsEnable = e.data.drawLightsEnable
+        this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
+        this.inst.updateBbox = true
+        this.updateDrawVerts = true
+        this.typedVertsToDrawVerts(this.inst.staticGeometry)
       } else {
-        if (this.inst.debug) console.debug("onMsg t:", runtime.GetTickCount(), e.data.type)
+        this.buff = e.data.buff
+        this.buffBones = e.data.buffBones
+        this.bones = new Float32Array(this.buffBones)
+        // this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
+        const x = this.inst.isEditor ? this.inst._inst.GetX() : this.inst.GetWorldInfo().GetX()
+        const y = this.inst.isEditor ? this.inst._inst.GetY() : this.inst.GetWorldInfo().GetY()
+        const z = this.inst.isEditor ? this.inst._inst.GetZElevation() : this.inst.GetWorldInfo().GetZElevation()
+        this.inst.minBB = [-10000 + x, -10000 + y, -10000 + z]
+        this.inst.maxBB = [10000 + x, 10000 + y, 10000 + z]
+        this.inst.updateBbox = true
+        this.updateDrawVerts = true
+        this.typedBonesToDrawBones()
       }
+      this.workerReady = true
+      if (!this.boundingBoxInit) {
+        this.inst.initBoundingBox()
+        this.boundingBoxInit = true
+      }
+    } else if (e.data.type === "status") {
+      this.buff = e.data.buff
+      if (e.data?.status?.workerReady) {
+        this.workerReady = true
+      }
+    } else if (e.data.type === "needAttributes") {
+      // Worker was created without vertex data (GPU skinning) but a CPU-skinning
+      // request arrived; send the attribute data once and retry next tick
+      this.buff = e.data.buff
+      this.workerReady = true
+      this.sendAttributesToWorker()
+    } else {
+      if (this.inst.debug) console.debug("onMsg t:", this._runtime.GetTickCount(), e.data.type)
     }
-    // Send the gltfModel to the worker
+  }
+
+  _computeBuffLengths() {
     const bufferViews = this.drawMeshes[this.drawMeshes.length - 1].bufferViews
     const buffLength = bufferViews[bufferViews.length - 1].start + bufferViews[bufferViews.length - 1].length
-    this.buff = new ArrayBuffer((buffLength + 7) * 4)
     const buffBonesLength =
       this.boneBufferViews[this.boneBufferViews.length - 1].start +
       this.boneBufferViews[this.boneBufferViews.length - 1].length
+    return { buffLength, buffBonesLength }
+  }
+
+  // The worker only reads bufferViews, drawIndices and (rebuilt per tick) drawVerts
+  _slimDrawMeshes() {
+    return this.drawMeshes.map((dm) => ({
+      bufferViews: dm.bufferViews,
+      drawIndices: dm.drawIndices,
+      drawVerts: [],
+    }))
+  }
+
+  async createWorker(runtime) {
+    // With GPU skinning known at creation time the worker only computes bone
+    // matrices, so all instances of the type share one worker (and one copy of the
+    // model data). Otherwise each instance gets a dedicated worker so CPU vertex
+    // skinning still runs in parallel across instances (original behavior).
+    this.useSharedWorker = !this.inst.instanceModel && !!this.inst.gpuSkinning
+    if (this.useSharedWorker) {
+      const sdkType = this._sdkType
+      if (!sdkType.animWorkerHost) sdkType.animWorkerHost = new GltfWorkerHostTop()
+      const host = sdkType.animWorkerHost
+      const port = await host.getPort(runtime)
+      if (this.released || !port) return null
+      this._workerHost = host
+      this._iid = this.inst.uid
+      this.msgPort = port // shared port: release() must not close it
+      host.add(this._iid, this)
+      const { buffLength, buffBonesLength } = this._computeBuffLengths()
+      this.buff = new ArrayBuffer((buffLength + 7) * 4)
+      if (!host.gltfSent) {
+        host.gltfSent = true
+        host.attributesSent = false // GPU skinning: length stubs only
+        port.postMessage({
+          type: "gltf",
+          shared: true,
+          gltf: this.buildWorkerPayload(false),
+          buffLength: buffLength,
+          drawMeshes: this._slimDrawMeshes(),
+          buffBonesLength,
+        })
+      }
+      port.postMessage({ type: "addInstance", iid: this._iid })
+      return { msgPort: port }
+    }
+
+    // Dedicated worker per instance.
+    // Create the worker with the runtime.createWorker() method.
+    // This must be awaited and resolves with a messagePort.
+    let path = await runtime.GetAssetManager().GetProjectFileUrl("gltfWorker.js")
+    if (this.released) return null
+    this.msgPort = await runtime._iRuntime.createWorker(path)
+    if (this.released) {
+      // Instance was destroyed while the worker was being created; tell it to close
+      this.msgPort.postMessage({ type: "release" })
+      this.msgPort.close()
+      this.msgPort = null
+      return null
+    }
+    this.msgPort.onmessage = (e) => this.onWorkerMessage(e)
+    // Send the gltfModel to the worker
+    const { buffLength, buffBonesLength } = this._computeBuffLengths()
+    this.buff = new ArrayBuffer((buffLength + 7) * 4)
+    // With GPU skinning the worker only computes bone matrices, so vertex attribute
+    // data is left out of the payload (stubs carry lengths for its bookkeeping).
+    // If the instance later switches to CPU skinning, the worker requests the
+    // attribute data via a "needAttributes" message.
+    const includeAttributes = !this.inst.gpuSkinning
+    this._attributesSentToWorker = includeAttributes
     this.msgPort.postMessage({
       type: "gltf",
-      gltf: this.gltfData,
+      gltf: this.buildWorkerPayload(includeAttributes),
       buffLength: buffLength,
-      drawMeshes: this.drawMeshes,
+      drawMeshes: this._slimDrawMeshes(),
       buffBonesLength,
     })
     return { msgPort: this.msgPort }
   }
 
+  // Builds the minimal object graph the animation worker needs: node/skin/animation
+  // state always; vertex attributes (positions, weights, joints, morph targets) only
+  // when the worker will do CPU skinning. Keyframe data is always required.
+  buildWorkerPayload(includeAttributes) {
+    const src = this.gltfData
+    const nodeMap = new Map()
+    const meshMap = new Map()
+    const skinMap = new Map()
+
+    const attrPayload = (acc) => {
+      if (acc == null || acc.data == null) return undefined
+      return includeAttributes ? { data: acc.data } : { dataLength: acc.data.length }
+    }
+
+    const meshPayload = (mesh) => {
+      if (mesh == null) return undefined
+      if (meshMap.has(mesh)) return meshMap.get(mesh)
+      const copy = {
+        name: mesh.name,
+        primitives: mesh.primitives.map((p) => ({
+          attributes: {
+            POSITION: attrPayload(p.attributes && p.attributes.POSITION),
+            WEIGHTS_0: attrPayload(p.attributes && p.attributes.WEIGHTS_0),
+            JOINTS_0: attrPayload(p.attributes && p.attributes.JOINTS_0),
+          },
+          targets: p.targets
+            ? p.targets.map((t) => (includeAttributes && t.POSITION ? { POSITION: { data: t.POSITION.data } } : {}))
+            : undefined,
+        })),
+      }
+      meshMap.set(mesh, copy)
+      return copy
+    }
+
+    const skinPayload = (skin) => {
+      if (skin == null) return undefined
+      if (skinMap.has(skin)) return skinMap.get(skin)
+      const copy = { joints: skin.joints.slice() } // rebound below
+      skinMap.set(skin, copy)
+      return copy
+    }
+
+    const nodes = (src.nodes || []).map((node) => {
+      const copy = {
+        name: node.name,
+        translation: node.translation,
+        rotation: node.rotation,
+        scale: node.scale,
+        matrix: node.matrix,
+        invMatrix: node.invMatrix,
+        weights: node.weights,
+        disabled: node.disabled,
+        invBindMatrix: node.invBindMatrix,
+        boneMatrix: node.boneMatrix,
+      }
+      nodeMap.set(node, copy)
+      return copy
+    })
+    for (const node of src.nodes || []) {
+      const copy = nodeMap.get(node)
+      if (node.children) copy.children = node.children.map((c) => nodeMap.get(c) || c)
+      if (node.mesh) copy.mesh = meshPayload(node.mesh)
+      if (node.skin) copy.skin = skinPayload(node.skin)
+    }
+    for (const skinCopy of skinMap.values()) {
+      skinCopy.joints = skinCopy.joints.map((j) => nodeMap.get(j) || j)
+    }
+
+    const animations = (src.animations || []).map((a) => {
+      const samplerMap = new Map()
+      const samplerPayload = (s) => {
+        if (samplerMap.has(s)) return samplerMap.get(s)
+        const copy = {
+          input: { min: s.input.min, max: s.input.max, data: s.input.data },
+          output: { data: s.output.data },
+        }
+        samplerMap.set(s, copy)
+        return copy
+      }
+      return {
+        name: a.name,
+        channels: a.channels.map((c) => ({
+          sampler: samplerPayload(c.sampler),
+          target: { path: c.target.path, node: nodeMap.get(c.target.node) || null },
+        })),
+      }
+    })
+
+    return {
+      nodes,
+      // Ordered meshes array: the "attributes" patch message indexes into it
+      meshes: (src.meshes || []).map((m) => meshPayload(m)),
+      animations,
+      scene: src.scene ? { nodes: src.scene.nodes.map((n) => nodeMap.get(n) || n) } : { nodes: [] },
+      skinnedNodes: (src.skinnedNodes || []).map((n) => nodeMap.get(n) || n),
+    }
+  }
+
+  // One-time transfer of vertex attribute data to the worker, requested when a
+  // GPU-skinning instance switches to a code path that needs CPU vertex transforms
+  sendAttributesToWorker() {
+    // With a shared worker the attribute data is shared too — send it once per host
+    const store = this._workerHost || this
+    if ((this._workerHost ? store.attributesSent : store._attributesSentToWorker) || !this.msgPort) return
+    if (this._workerHost) store.attributesSent = true
+    else store._attributesSentToWorker = true
+    const src = this.gltfData
+    const meshes = (src.meshes || []).map((m) => ({
+      primitives: m.primitives.map((p) => ({
+        POSITION: p.attributes && p.attributes.POSITION ? p.attributes.POSITION.data : undefined,
+        WEIGHTS_0: p.attributes && p.attributes.WEIGHTS_0 ? p.attributes.WEIGHTS_0.data : undefined,
+        JOINTS_0: p.attributes && p.attributes.JOINTS_0 ? p.attributes.JOINTS_0.data : undefined,
+        targets: p.targets ? p.targets.map((t) => (t.POSITION ? t.POSITION.data : undefined)) : undefined,
+      })),
+    }))
+    this.msgPort.postMessage({ type: "attributes", meshes })
+  }
+
   enableNode(nodeName, enable) {
-    this.msgPort.postMessage({ type: "enableNode", nodeName: nodeName, enable: enable })
+    this.msgPort.postMessage({ type: "enableNode", nodeName: nodeName, enable: enable, iid: this._iid })
   }
 
   setNodeMorphWeight(nodeName, index, weight) {
-    this.msgPort.postMessage({ type: "setNodeMorphWeight", nodeName, index, weight })
+    this.msgPort.postMessage({ type: "setNodeMorphWeight", nodeName, index, weight, iid: this._iid })
   }
 
   deleteNodeMorphWeight(nodeName, index) {
-    this.msgPort.postMessage({ type: "deleteNodeMorphWeight", nodeName, index })
+    this.msgPort.postMessage({ type: "deleteNodeMorphWeight", nodeName, index, iid: this._iid })
   }
 
   setBBFromVerts(verts, minBBox, maxBBox) {
@@ -921,7 +1176,8 @@ class GltfModelWTop {
           node.boneBuffer = boneBuffer
         }
         const start = boneBufferViews[bufferViewIndex].start
-        node.boneBuffer.setNodeXform(bones.slice(start, start + MATRIX_SIZE))
+        // BoneBuffer setters copy into their own arrays, so views are safe here
+        node.boneBuffer.setNodeXform(bones.subarray(start, start + MATRIX_SIZE))
         bufferViewIndex += 1
       }
     }
@@ -939,32 +1195,34 @@ class GltfModelWTop {
       // It seems to be a flat array of matrices.
       // bones.slice(start, start + length - MATRIX_SIZE) is for bone matrices
       // bones.slice(start + length - MATRIX_SIZE, start + length) is for rootNodeXform
-      skinnedNode.boneBuffer.setBones(bones.slice(start, start + length - MATRIX_SIZE))
-      skinnedNode.boneBuffer.setRootNodeXform(bones.slice(start + length - MATRIX_SIZE, start + length))
+      skinnedNode.boneBuffer.setBones(bones.subarray(start, start + length - MATRIX_SIZE))
+      skinnedNode.boneBuffer.setRootNodeXform(bones.subarray(start + length - MATRIX_SIZE, start + length))
       bufferViewIndex += 1
     }
   }
 
   typedVertsToDrawVerts(staticGeometry) {
     for (let j = 0; j <= this.drawMeshesIndex; j++) {
-      const drawVerts = this.drawMeshes[j].drawVerts
-      const bufferViews = this.drawMeshes[j].bufferViews
-      const objectBuffers = this.drawMeshes[j].objectBuffers
+      const drawMesh = this.drawMeshes[j]
+      const drawVerts = drawMesh.drawVerts
+      const bufferViews = drawMesh.bufferViews
+      const objectBuffers = drawMesh.objectBuffers
       drawVerts.length = 0
       if (!this.activeNodes.includes(j)) {
         drawVerts.push([])
         continue
       }
+      if (!drawMesh._vertsCache) drawMesh._vertsCache = []
       for (let ii = 0; ii < bufferViews.length; ii++) {
         const bufferView = bufferViews[ii]
         let buffStart = bufferView.start
 
-        // Convert typed array to regular array
-        // to speed access to data, net win is 10-20%
-        const v = new Float32Array(bufferView.length)
-        for (let a = 0; a < bufferView.length; a++) {
-          v[a] = this.verts[buffStart + a]
+        // Reuse a persistent per-bufferView array instead of allocating every tick
+        let v = drawMesh._vertsCache[ii]
+        if (!v || v.length !== bufferView.length) {
+          v = drawMesh._vertsCache[ii] = new Float32Array(bufferView.length)
         }
+        v.set(this.verts.subarray(buffStart, buffStart + bufferView.length))
         drawVerts.push(v)
         if (staticGeometry) {
           if (objectBuffers.length == 0) {
@@ -1019,12 +1277,21 @@ class GltfModelWTop {
       for (let i = 0; i < node.children.length; i++) this.transformNode(node.children[i], staticGeometry, gpuSkinning)
   }
 
-  getPolygons(gpuSkinning) {
+  getPolygons(staticGeometry) {
     if (!this.workerReady) return
-    const editorData = this.getPolygonsPrep(gpuSkinning)
+    const editorData = this.getPolygonsPrep(staticGeometry, this.inst.gpuSkinning)
     const data = { editorData }
     this.workerReady = false
-    this.msgPort.postMessage({ type: "getPolygons", data: data, buff: this.buff }, [this.buff])
+    // Return the bones buffer to the worker so it can be reused (ping-pong like buff)
+    const buffBones = this.buffBones && this.buffBones.byteLength > 0 ? this.buffBones : null
+    if (buffBones) {
+      this.buffBones = null
+      this.bones = null
+    }
+    this.msgPort.postMessage(
+      { type: "getPolygons", data: data, buff: this.buff, buffBones, iid: this._iid },
+      buffBones ? [this.buff, buffBones] : [this.buff]
+    )
   }
 
   getEditorData(isEditor, lightEnable, lightUpdate, gpuSkinning) {
@@ -1379,7 +1646,16 @@ class GltfModelWTop {
       this.inst.runtime.UpdateRender()
     }
     const data = { animationData, editorData }
-    this.msgPort.postMessage({ type: "updateAnimationPolygons", data: data, buff: this.buff }, [this.buff])
+    // Return the bones buffer to the worker so it can be reused (ping-pong like buff)
+    const buffBones = this.buffBones && this.buffBones.byteLength > 0 ? this.buffBones : null
+    if (buffBones) {
+      this.buffBones = null
+      this.bones = null
+    }
+    this.msgPort.postMessage(
+      { type: "updateAnimationPolygons", data: data, buff: this.buff, buffBones, iid: this._iid },
+      buffBones ? [this.buff, buffBones] : [this.buff]
+    )
   }
 
   updateModelRotate(x, y, z) {

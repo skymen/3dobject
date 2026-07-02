@@ -11,6 +11,27 @@
 
         Release()
         {
+            if (this.animWorkerHost) {
+                this.animWorkerHost.release();
+                this.animWorkerHost = null;
+            }
+            if (this.gltfData && typeof this.gltfData.release === "function") {
+                this.gltfData.release();
+                this.gltfData = null;
+            }
+            const renderer = this._runtime?.GetCanvasManager?.()?.GetRenderer?.();
+            if (renderer) {
+                if (this.texture) {
+                    for (const name in this.texture) {
+                        renderer.DeleteTexture(this.texture[name]);
+                    }
+                }
+                if (this.whiteTexture) {
+                    renderer.DeleteTexture(this.whiteTexture);
+                }
+            }
+            this.texture = null;
+            this.whiteTexture = null;
             super.Release();
         }
 
@@ -22,6 +43,7 @@
             this.gltfData = new globalThis.GltfData(this._runtime, this);
             this.dynamicTexturesLoaded = false;
             this.texture = {};
+            this.animWorkerHost = null; // shared per-type animation worker (GPU skinning)
         }
 
         async LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner, instanceModel)

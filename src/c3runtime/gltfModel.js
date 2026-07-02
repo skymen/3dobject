@@ -31,6 +31,7 @@ class GltfModelTop {
     this.meshNames = new Map()
     this.viewPos = [0, 0, 0]
     this.boundProgram = null
+    this.released = false
   }
 
   _smoothstep(min, max, value) {
@@ -41,6 +42,7 @@ class GltfModelTop {
   async init() {
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
     await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
+    if (this.released) return
     if ("buffers" in this.gltfData) {
       this.gltfData.buffers = null
     }
@@ -58,6 +60,7 @@ class GltfModelTop {
   }
 
   release() {
+    this.released = true
     this._runtime = null
     this._sdkType = null
     this.inst = null
@@ -124,9 +127,11 @@ class GltfModelTop {
   }
 
   copyGltfData(sourceGltf) {
-    // Create completely new object (no direct references to source)
-    const targetGltf = structuredClone(sourceGltf)
-    return targetGltf
+    // Per-instance view: mutable scene-graph state cloned, heavy immutable data shared
+    if (globalThis.GltfData && typeof globalThis.GltfData.cloneInstanceView === "function") {
+      return globalThis.GltfData.cloneInstanceView(sourceGltf)
+    }
+    return structuredClone(sourceGltf)
   }
 
   setVertexShaderModelRotate(renderer, modelRotate) {
@@ -764,7 +769,6 @@ class GltfModelTop {
 
       for (let i = 0; i < node.mesh.primitives.length; i++) {
         let posData = node.mesh.primitives[i].attributes.POSITION.data
-        let transformedVerts = new Float32Array(posData.length)
         const weights = node.mesh.weights
 
         let morphActive = false
@@ -815,16 +819,23 @@ class GltfModelTop {
           this.drawMeshes[this.drawMeshesIndex].material = null
         }
 
-        const drawVerts = this.drawMeshes[this.drawMeshesIndex].drawVerts
-        const drawUVs = this.drawMeshes[this.drawMeshesIndex].drawUVs
-        const drawIndices = this.drawMeshes[this.drawMeshesIndex].drawIndices
-        const drawColors = this.drawMeshes[this.drawMeshesIndex].drawColors
-        const drawNormals = this.drawMeshes[this.drawMeshesIndex].drawNormals
-        const objectBuffers = this.drawMeshes[this.drawMeshesIndex].objectBuffers
-        const drawVertsOrig = this.drawMeshes[this.drawMeshesIndex].drawVertsOrig
+        const drawMesh = this.drawMeshes[this.drawMeshesIndex]
+        const drawVerts = drawMesh.drawVerts
+        const drawUVs = drawMesh.drawUVs
+        const drawIndices = drawMesh.drawIndices
+        const drawColors = drawMesh.drawColors
+        const drawNormals = drawMesh.drawNormals
+        const objectBuffers = drawMesh.objectBuffers
+        const drawVertsOrig = drawMesh.drawVertsOrig
 
         // reset draw array for new values
         drawVerts.length = 0
+
+        // Reuse the per-mesh output array instead of allocating every tick
+        let transformedVerts = drawMesh._transformedVerts
+        if (!transformedVerts || transformedVerts.length !== posData.length) {
+          transformedVerts = drawMesh._transformedVerts = new Float32Array(posData.length)
+        }
 
         let v = [0, 0, 0]
 
@@ -865,21 +876,25 @@ class GltfModelTop {
             for (let ii = 0; ii < transformedVerts.length; ii++) gltf.pointBatch.push(transformedVerts[ii])
           else {
             if (transformedVerts.length > 0) drawVerts.push(transformedVerts)
+            // Attribute data is immutable and shared across instances; only copy when
+            // a type conversion is actually needed
+            const sharedOrCopy = (data, Type) => (data instanceof Type ? data : new Type(data))
             // Only need to set once for all the below
             if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
-              drawUVs.push(new Float32Array(node.mesh.primitives[i].attributes.TEXCOORD_0.data))
+              drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
             }
             if (gpuSkinning && drawVertsOrig.length === 0 && "POSITION" in node.mesh.primitives[i].attributes) {
-              drawVertsOrig.push(new Float32Array(posData))
+              drawVertsOrig.push(sharedOrCopy(posData, Float32Array))
             }
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
-              drawColors.push(new Float32Array(node.mesh.primitives[i].attributes.COLOR_0.data))
+              drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
             }
             if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-              drawNormals.push(new Float32Array(node.mesh.primitives[i].attributes.NORMAL.data))
+              drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
             }
 
-            if (drawIndices.length === 0) drawIndices.push(new Uint16Array(node.mesh.primitives[i].indices.data))
+            if (drawIndices.length === 0)
+              drawIndices.push(sharedOrCopy(node.mesh.primitives[i].indices.data, Uint16Array))
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(
@@ -1069,7 +1084,12 @@ class GltfModelTop {
         let posData = node.mesh.primitives[i].attributes.POSITION.data
         let weights = node.mesh.primitives[i].attributes.WEIGHTS_0.data
         let joints = node.mesh.primitives[i].attributes.JOINTS_0.data
-        let transformedVerts = new Float32Array(posData.length)
+        // Reuse the per-mesh output array instead of allocating every tick
+        const skinnedDrawMesh = this.drawMeshes[this.drawMeshesIndex]
+        let transformedVerts = skinnedDrawMesh._transformedVerts
+        if (!transformedVerts || transformedVerts.length !== posData.length) {
+          transformedVerts = skinnedDrawMesh._transformedVerts = new Float32Array(posData.length)
+        }
 
         for (let j = 0; j < posData.length / 3; j++) {
           if (gpuSkinning) continue
@@ -1124,21 +1144,24 @@ class GltfModelTop {
             for (let ii = 0; ii < transformedVerts.length; ii++) gltf.pointBatch.push(transformedVerts[ii])
           else {
             if (transformedVerts.length > 0) drawVerts.push(transformedVerts)
+            // Attribute data is immutable and shared across instances; only copy when
+            // a type conversion is actually needed
+            const sharedOrCopy = (data, Type) => (data instanceof Type ? data : new Type(data))
             // Only need to set once
             if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
-              drawUVs.push(new Float32Array(node.mesh.primitives[i].attributes.TEXCOORD_0.data))
+              drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
             }
             if (gpuSkinning && drawVertsOrig.length === 0 && "POSITION" in node.mesh.primitives[i].attributes) {
-              drawVertsOrig.push(new Float32Array(posData))
+              drawVertsOrig.push(sharedOrCopy(posData, Float32Array))
             }
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
-              drawColors.push(new Float32Array(node.mesh.primitives[i].attributes.COLOR_0.data))
+              drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
             }
             if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-              drawNormals.push(new Float32Array(node.mesh.primitives[i].attributes.NORMAL.data))
+              drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
             }
             if (gpuSkinning && drawJoints.length === 0 && "JOINTS_0" in node.mesh.primitives[i].attributes) {
-              const jointsData = new Uint16Array(node.mesh.primitives[i].attributes.JOINTS_0.data)
+              const jointsData = sharedOrCopy(node.mesh.primitives[i].attributes.JOINTS_0.data, Uint16Array)
               drawJoints.push(jointsData)
               // Calculate maxJointIndexUsed
               let maxIndex = -1
@@ -1150,9 +1173,10 @@ class GltfModelTop {
               this.drawMeshes[this.drawMeshesIndex].maxJointIndexUsed = maxIndex
             }
             if (gpuSkinning && drawWeights.length === 0 && "WEIGHTS_0" in node.mesh.primitives[i].attributes) {
-              drawWeights.push(new Float32Array(node.mesh.primitives[i].attributes.WEIGHTS_0.data))
+              drawWeights.push(sharedOrCopy(node.mesh.primitives[i].attributes.WEIGHTS_0.data, Float32Array))
             }
-            if (drawIndices.length === 0) drawIndices.push(new Uint16Array(node.mesh.primitives[i].indices.data))
+            if (drawIndices.length === 0)
+              drawIndices.push(sharedOrCopy(node.mesh.primitives[i].indices.data, Uint16Array))
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(
