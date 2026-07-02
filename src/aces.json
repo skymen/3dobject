@@ -368,14 +368,6 @@
         "highlight": false
       },
       {
-        "id": "is-wireframe-enabled",
-        "scriptName": "IsWireframeEnabled",
-        "highlight": false,
-        "isTrigger": false,
-        "isInvertible": true,
-        "isCompatibleWithTriggers": true
-      },
-      {
         "id": "is-node-enabled",
         "scriptName": "IsNodeEnabled",
         "highlight": false,
@@ -434,59 +426,12 @@
         "params": []
       },
       {
-        "id": "enable-wireframe",
-        "scriptName": "EnableWireframe",
-        "highlight": false,
-        "params": [
-          {
-            "id": "enable",
-            "type": "boolean",
-            "initialValue": "true"
-          }
-        ]
-      },
-      {
-        "id": "set-wireframe-widths",
-        "scriptName": "SetWireframeWidths",
-        "highlight": false,
-        "isDeprecated": false,
-        "params": [
-          {
-            "id": "x-wireframe-width",
-            "type": "number",
-            "initialValue": "1"
-          },
-          {
-            "id": "y-wireframe-width",
-            "type": "number",
-            "initialValue": "1"
-          },
-          {
-            "id": "z-wireframe-width",
-            "type": "number",
-            "initialValue": "1"
-          }
-        ]
-      },
-      {
         "id": "load-model-from-template",
         "scriptName": "LoadModelFromTemplate",
         "highlight": false,
         "params": [
           {
             "id": "template-uid",
-            "type": "number",
-            "initialValue": 0
-          }
-        ]
-      },
-      {
-        "id": "set-vertex-rounding",
-        "scriptName": "SetVertexRounding",
-        "highlight": false,
-        "params": [
-          {
-            "id": "round",
             "type": "number",
             "initialValue": 0
           }
@@ -543,30 +488,6 @@
       }
     ],
     "expressions": [
-      {
-        "id": "x-wireframe-width",
-        "scriptName": "XWireframeWidth",
-        "expressionName": "XWireframeWidth",
-        "returnType": "number",
-        "highlight": false,
-        "params": []
-      },
-      {
-        "id": "y-wireframe-width",
-        "scriptName": "YWireframeWidth",
-        "expressionName": "YWireframeWidth",
-        "returnType": "number",
-        "highlight": false,
-        "params": []
-      },
-      {
-        "id": "z-wireframe-width",
-        "scriptName": "ZWireframeWidth",
-        "expressionName": "ZWireframeWidth",
-        "returnType": "number",
-        "highlight": false,
-        "params": []
-      },
       {
         "id": "node-point-position",
         "scriptName": "NodePointPosition",
@@ -753,266 +674,9 @@
     ]
   },
   "material": {
-    "actions": [
-      {
-        "id": "load-material",
-        "isAsync": true,
-        "scriptName": "LoadMaterial",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-path",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "load-material-from-sprite",
-        "isAsync": false,
-        "scriptName": "LoadMaterialFromSprite",
-        "highlight": false,
-        "params": [
-          {
-            "id": "sprite-uid",
-            "type": "number",
-            "initialValue": ""
-          },
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "unload-material-from-sprite",
-        "isAsync": false,
-        "scriptName": "UnloadMaterialFromSprite",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "set-mesh-material",
-        "scriptName": "SetMeshMaterial",
-        "highlight": false,
-        "params": [
-          {
-            "id": "mesh-name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "delete-material",
-        "scriptName": "DeleteMaterial",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "offset-node-uv",
-        "scriptName": "OffsetNodeUV",
-        "highlight": false,
-        "params": [
-          {
-            "id": "node-name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "u-offset",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "v-offset",
-            "type": "number",
-            "initialValue": "0"
-          }
-        ]
-      },
-      {
-        "id": "offset-material-uv",
-        "scriptName": "OffsetMaterialUV",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "u-offset",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "v-offset",
-            "type": "number",
-            "initialValue": "0"
-          }
-        ]
-      },
-      {
-        "id": "rotate-material-uv",
-        "scriptName": "RotateMaterialUV",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "angle",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "x",
-            "type": "number",
-            "initialValue": "0"
-          },
-          {
-            "id": "y",
-            "type": "number",
-            "initialValue": "0"
-          }
-        ]
-      }
-    ],
+    "actions": [],
     "conditions": [],
-    "expressions": [
-      {
-        "id": "u-offset",
-        "scriptName": "UOffset",
-        "expressionName": "UOffset",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "node-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "v-offset",
-        "scriptName": "VOffset",
-        "expressionName": "VOffset",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "node-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "material-rotate-angle",
-        "scriptName": "MaterialRotateAngle",
-        "expressionName": "MaterialRotateAngle",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "material-rotate-x",
-        "scriptName": "MaterialRotateX",
-        "expressionName": "MaterialRotateX",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "material-rotate-y",
-        "scriptName": "MaterialRotateY",
-        "expressionName": "MaterialRotateY",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "material-u-offset",
-        "scriptName": "MaterialUOffset",
-        "expressionName": "MaterialUOffset",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "material-v-offset",
-        "scriptName": "MaterialVOffset",
-        "expressionName": "MaterialVOffset",
-        "returnType": "number",
-        "highlight": false,
-        "params": [
-          {
-            "id": "material-name",
-            "type": "string",
-            "initialValue": ""
-          }
-        ]
-      },
-      {
-        "id": "materials",
-        "scriptName": "Materials",
-        "expressionName": "Materials",
-        "returnType": "string",
-        "highlight": false,
-        "params": []
-      }
-    ]
+    "expressions": []
   },
   "lighting": {
     "conditions": [],
@@ -1088,45 +752,6 @@
             "id": "blend-time",
             "type": "number",
             "initialValue": "0"
-          }
-        ]
-      },
-      {
-        "id": "set-node-morph-weight",
-        "scriptName": "SetNodeMorphWeight",
-        "highlight": false,
-        "params": [
-          {
-            "id": "name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "index",
-            "type": "number",
-            "initialValue": 0
-          },
-          {
-            "id": "weight",
-            "type": "number",
-            "initialValue": 0
-          }
-        ]
-      },
-      {
-        "id": "delete-node-morph-weight",
-        "scriptName": "DeleteNodeMorphWeight",
-        "highlight": false,
-        "params": [
-          {
-            "id": "name",
-            "type": "string",
-            "initialValue": ""
-          },
-          {
-            "id": "index",
-            "type": "number",
-            "initialValue": 0
           }
         ]
       },

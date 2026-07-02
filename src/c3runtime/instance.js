@@ -42,18 +42,11 @@
       this.xMinBB = [0, 0, 0]
       this.xMaxBB = [0, 0, 0]
       this.bboxScale = 1
-      this.wireframe = false
-      this.xWireframeWidth = 2
-      this.yWireframeWidth = 2
-      this.zWireframeWidth = 2
-      this.materialsModify = new Map()
       this.animationNameFinished = ""
       this.cpuXform = false
       this.totalTriangles = 0
-      this.vertexScale = 0
       this.quaternion = [0, 0, 0, 1]
       this.enableQuaternion = false
-      this.spriteTextures = new Map()
       this.staticGeometry = false
       this.gpuSkinning = false
       this.animationOffset = 0
@@ -84,7 +77,7 @@
         this.xScale = properties[11]
         this.yScale = properties[12]
         this.zScale = properties[13]
-        this.wireframe = properties[14]
+        // properties[14] (wireframe) removed in the UTRS trim
         this.workerAnimation = properties[15]
         this.backFaceCull = properties[16]
         this.useBoneBoundingBox = properties[17] !== false // Default to true
@@ -541,12 +534,7 @@
       this.cannonBody = null
       this.cannonSetRotation = null
       this.bboxScale = null
-      this.wireframe = null
       this.workerAnimation = null
-      this.xWireframeWidth = null
-      this.yWireframeWidth = null
-      this.zWireframeWidth = null
-      this.materialsModify = null
       this.gltf = null
       this.quaternion = null
       this.animationOffset = null

@@ -162,21 +162,6 @@ class GltfModelTop {
     const mat4 = globalThis.glMatrix3D.mat4
     const quat = globalThis.glMatrix3D.quat
 
-    let xWireframeWidth, yWireframeWidth, zWireframeWidth
-
-    if (this.inst.wireframe) {
-      const xScale = this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)
-      const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
-      const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
-
-      xWireframeWidth =
-        this.inst.isEditor || this.inst.cpuXform ? this.inst.xWireframeWidth : this.inst.xWireframeWidth / xScale
-      yWireframeWidth =
-        this.inst.isEditor || this.inst.cpuXform ? this.inst.yWireframeWidth : this.inst.yWireframeWidth / yScale
-      zWireframeWidth =
-        this.inst.isEditor || this.inst.cpuXform ? this.inst.zWireframeWidth : this.inst.zWireframeWidth / zScale
-    }
-
     const instanceColor = [
       instanceC3Color.getR(),
       instanceC3Color.getG(),
@@ -239,12 +224,6 @@ class GltfModelTop {
       const material = this.drawMeshes[j].material
       const hasTexture =
         material && "pbrMetallicRoughness" in material && "baseColorTexture" in material.pbrMetallicRoughness
-      const offsetUV = this.drawMeshes[j].offsetUV
-      const materialsModify = this.inst.materialsModify
-      const offsetMaterial = materialsModify.has(material?.name) && materialsModify.get(material?.name)?.offsetUV
-      const rotateMaterial = materialsModify.has(material?.name) && materialsModify.get(material?.name)?.rotateUV
-      const vertexScale = this.inst.vertexScale
-      let isSpriteTexture = false
       let rWidth = null
       let rHeight = null
       let rOffsetX = null
@@ -291,21 +270,6 @@ class GltfModelTop {
           }
         } else {
           let texture = textures[material.name]
-          if (this.inst.spriteTextures.has(material.name)) {
-            const uid = this.inst.spriteTextures.get(material.name)
-            const spriteInst = this._runtime.GetInstanceByUID(uid)
-            if (spriteInst) {
-              isSpriteTexture = true
-              texture = spriteInst.GetSdkInstance().GetTexture()
-              const texQuad = spriteInst.GetSdkInstance().GetTexQuad()
-              rOffsetX = texQuad.getTlx()
-              rOffsetY = texQuad.getTly()
-              rWidth = texQuad.getTrx() - texQuad.getTlx()
-              rHeight = texQuad.getBly() - texQuad.getTly()
-            } else {
-              console.warn("Sprite texture not found from uid, for 3Dobject uid", uid, this.inst.uid)
-            }
-          }
           // If texture is not loaded, skip rendering
           if (!texture) continue
           if (texture != currentTexture) {
@@ -314,18 +278,6 @@ class GltfModelTop {
           }
         }
       }
-      // Create const for mat2
-      const mat2 = globalThis.glMatrix3D.mat2
-      const vec2 = globalThis.glMatrix3D.vec2
-      let rotateMatrix = null
-
-      if (rotateMaterial) {
-        const rotateUV = materialsModify.get(material.name)?.rotateUV
-        // Create rotate matrix
-        rotateMatrix = mat2.create()
-        mat2.fromRotation(rotateMatrix, rotateUV.angle)
-      }
-
       const xVerts = drawVerts
 
       // Static geometry, draw from GPU buffers
@@ -341,9 +293,6 @@ class GltfModelTop {
             renderer,
             instanceBoneBuffer,
             this._sdkType.gltfData,
-            rotateMaterial,
-            offsetMaterial,
-            false, // phong lighting removed
             currentColor // Pass calculated color to draw method
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
@@ -365,62 +314,7 @@ class GltfModelTop {
         totalTriangles += triangleCount
         for (let i = 0; i < triangleCount; i++) {
           if (hasTexture) {
-            if (offsetMaterial || rotateMaterial) {
-              // create new arrays for the UVs
-              const uvQuad = [
-                [uv[ind[i * 3 + 0] * 2 + 0], uv[ind[i * 3 + 0] * 2 + 1]],
-                [uv[ind[i * 3 + 1] * 2 + 0], uv[ind[i * 3 + 1] * 2 + 1]],
-                [uv[ind[i * 3 + 2] * 2 + 0], uv[ind[i * 3 + 2] * 2 + 1]],
-              ]
-              if (rotateMaterial) {
-                // Rotate UVs
-                vec2.sub(uvQuad[0], uvQuad[0], [rotateMaterial.x, rotateMaterial.y])
-                vec2.sub(uvQuad[1], uvQuad[1], [rotateMaterial.x, rotateMaterial.y])
-                vec2.sub(uvQuad[2], uvQuad[2], [rotateMaterial.x, rotateMaterial.y])
-                mat2.multiply(uvQuad[0], rotateMatrix, uvQuad[0])
-                mat2.multiply(uvQuad[1], rotateMatrix, uvQuad[1])
-                mat2.multiply(uvQuad[2], rotateMatrix, uvQuad[2])
-                vec2.add(uvQuad[0], uvQuad[0], [rotateMaterial.x, rotateMaterial.y])
-                vec2.add(uvQuad[1], uvQuad[1], [rotateMaterial.x, rotateMaterial.y])
-                vec2.add(uvQuad[2], uvQuad[2], [rotateMaterial.x, rotateMaterial.y])
-              }
-
-              if (offsetMaterial) {
-                const uOffset = offsetMaterial.u
-                const vOffset = offsetMaterial.v
-                // Offset UVs in uvQuad
-                uvQuad[0][0] += uOffset
-                uvQuad[0][1] += vOffset
-                uvQuad[1][0] += uOffset
-                uvQuad[1][1] += vOffset
-                uvQuad[2][0] += uOffset
-                uvQuad[2][1] += vOffset
-              }
-              // Set tempquad
-              tempQuad.set(
-                uvQuad[0][0],
-                uvQuad[0][1],
-                uvQuad[1][0],
-                uvQuad[1][1],
-                uvQuad[2][0],
-                uvQuad[2][1],
-                uvQuad[2][0],
-                uvQuad[2][1]
-              )
-            } else if (offsetUV) {
-              const uOffset = offsetUV.u
-              const vOffset = offsetUV.v
-              tempQuad.set(
-                uv[ind[i * 3 + 0] * 2 + 0] + uOffset,
-                uv[ind[i * 3 + 0] * 2 + 1] + vOffset,
-                uv[ind[i * 3 + 1] * 2 + 0] + uOffset,
-                uv[ind[i * 3 + 1] * 2 + 1] + vOffset,
-                uv[ind[i * 3 + 2] * 2 + 0] + uOffset,
-                uv[ind[i * 3 + 2] * 2 + 1] + vOffset,
-                uv[ind[i * 3 + 2] * 2 + 0] + uOffset,
-                uv[ind[i * 3 + 2] * 2 + 1] + vOffset
-              )
-            } else {
+            {
               tempQuad.set(
                 uv[ind[i * 3 + 0] * 2 + 0],
                 uv[ind[i * 3 + 0] * 2 + 1],
@@ -432,7 +326,7 @@ class GltfModelTop {
                 uv[ind[i * 3 + 2] * 2 + 1]
               )
             }
-            if (this.inst.instanceTexture || isSpriteTexture) {
+            if (this.inst.instanceTexture) {
               tempQuad.setTlx(tempQuad.getTlx() * rWidth + rOffsetX)
               tempQuad.setTly(tempQuad.getTly() * rHeight + rOffsetY)
               tempQuad.setTrx(tempQuad.getTrx() * rWidth + rOffsetX)
@@ -460,42 +354,10 @@ class GltfModelTop {
           y2 = v[ind[i3 + 2] * 3 + 1]
           z2 = v[ind[i3 + 2] * 3 + 2] - z
 
-          if (this.inst.wireframe) {
-            this.drawWireFrame(
-              renderer,
-              whiteTexture,
-              tempQuad,
-              x0,
-              y0,
-              z0,
-              x1,
-              y1,
-              z1,
-              x2,
-              y2,
-              z2,
-              xWireframeWidth,
-              yWireframeWidth,
-              zWireframeWidth
-            )
-          } else {
+          {
             // Set base color
             renderer.SetColorRgba(currentColor[0], currentColor[1], currentColor[2], currentColor[3])
 
-            if (vertexScale != 0) {
-              const xScale = (this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)) * vertexScale
-              const yScale = (this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)) * vertexScale
-              const zScale = (this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)) * vertexScale
-              x0 = Math.round(x0 * xScale) / xScale
-              y0 = Math.round(y0 * xScale) / yScale
-              z0 = Math.round(z0 * xScale) / zScale
-              x1 = Math.round(x1 * xScale) / xScale
-              y1 = Math.round(y1 * xScale) / yScale
-              z1 = Math.round(z1 * xScale) / zScale
-              x2 = Math.round(x2 * xScale) / xScale
-              y2 = Math.round(y2 * xScale) / yScale
-              z2 = Math.round(z2 * xScale) / zScale
-            }
             renderer.Quad3D2(x0, y0, z0, x1, y1, z1, x2, y2, z2, x2, y2, z2, tempQuad, true)
           }
         }
@@ -622,16 +484,10 @@ class GltfModelTop {
         let morphActive = false
         let morphTargets = null
         let morphWeights = null
-        if (node.weights || node.morphWeights) {
-          if (!node.weights) node.weights = new Float32Array(node.mesh.primitives[i].targets.length)
+        if (node.weights) {
           morphActive = true
           morphTargets = node.mesh.primitives[i].targets
-          morphWeights = [...node.weights]
-          if (node.morphWeights) {
-            for (let j = 0; j < morphWeights.length; j++) {
-              if (node.morphWeights.has(j)) morphWeights[j] = node.morphWeights.get(j)
-            }
-          }
+          morphWeights = node.weights
         }
 
         this.drawMeshesIndex++
@@ -647,7 +503,6 @@ class GltfModelTop {
             drawJoints: [],
             drawWeights: [],
             disabled: false,
-            morphWeights: null,
             objectBuffers: [],
             maxJointIndexUsed: -1,
           })
@@ -657,7 +512,6 @@ class GltfModelTop {
         if (gpuSkinning && !staticGeometry) this.drawMeshes[this.drawMeshesIndex].boneBuffer = node.boneBuffer
 
         this.drawMeshes[this.drawMeshesIndex].disabled = node.disabled
-        if (node.offsetUV) this.drawMeshes[this.drawMeshesIndex].offsetUV = node.offsetUV
 
         // Update material each time, in case an ACE changes it
         if ("material" in node.mesh.primitives[i]) {
@@ -887,22 +741,16 @@ class GltfModelTop {
         if (gpuSkinning) this.drawMeshes[this.drawMeshesIndex].boneBuffer = node.boneBuffer
 
         this.drawMeshes[this.drawMeshesIndex].disabled = node.disabled
-        if (node.offsetUV) this.drawMeshes[this.drawMeshesIndex].offsetUV = node.offsetUV
         if (node.disabled) continue
 
         let morphActive = false
         let morphTargets = null
         let morphWeights = null
 
-        if (node.weights || node.morphWeights) {
-          if (!node.weights) node.weights = new Float32Array(node.mesh.primitives[i].targets.length)
+        if (node.weights) {
           morphActive = true
           morphTargets = node.mesh.primitives[i].targets
-          morphWeights = [...node.weights]
-          if (node.morphWeights)
-            for (let j = 0; j < morphWeights.length; j++) {
-              if (node.morphWeights.has(j)) morphWeights[j] = node.morphWeights.get(j)
-            }
+          morphWeights = node.weights
         }
 
         // Update material each time, in case an ACE changes it
@@ -1196,60 +1044,6 @@ class GltfModelTop {
     }
 
     return names
-  }
-
-  drawWireFrame(renderer, whiteTexture, tempQuad, x0, y0, z0, x1, y1, z1, x2, y2, z2, xWidth, yWidth, zWidth) {
-    renderer.SetTexture(whiteTexture)
-    tempQuad.set(0, 0, 1, 0, 0, 1, 0, 1)
-
-    renderer.Quad3D2(
-      x0,
-      y0,
-      z0,
-      x0 + xWidth,
-      y0 + yWidth,
-      z0 + zWidth,
-      x1,
-      y1,
-      z1,
-      x1 + xWidth,
-      y1 + yWidth,
-      z1 + zWidth,
-      tempQuad,
-      true
-    )
-    renderer.Quad3D2(
-      x1,
-      y1,
-      z1,
-      x1 + xWidth,
-      y1 + yWidth,
-      z1 + zWidth,
-      x2,
-      y2,
-      z2,
-      x2 + xWidth,
-      y2 + yWidth,
-      z2 + zWidth,
-      tempQuad,
-      true
-    )
-    renderer.Quad3D2(
-      x2,
-      y2,
-      z2,
-      x2 + xWidth,
-      y2 + yWidth,
-      z2 + zWidth,
-      x0,
-      y0,
-      z0,
-      x0 + xWidth,
-      y0 + yWidth,
-      z0 + zWidth,
-      tempQuad,
-      true
-    )
   }
 
   updateAnimationPolygons(index, time, onScreen, deltaTime, staticGeometry, gpuSkinning) {

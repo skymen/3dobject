@@ -85,11 +85,6 @@ class ObjectBufferTop {
     }
 
     // vao created at draw time to insure the correct shader is used
-    this.locURotateMatrix = null;
-    this.locURotateCenter = null;
-    this.locUOffsetUV = null;
-    this.locUVXformEnable = null;
-    
     // Color uniform locations for 3DObject compatibility
     this.locUseUniformColor = null;
     this.locObjectColor = null;
@@ -193,51 +188,6 @@ class ObjectBufferTop {
     return vao
   }
 
-  createUVXform(rotateMaterial, offsetMaterial) {
-    if (!rotateMaterial && !offsetMaterial) {
-      return { enable: false }
-    }
-    const mat2 = globalThis.glMatrix3D.mat2
-    const vec2 = globalThis.glMatrix3D.vec2
-    let effectiveRotateMaterial = rotateMaterial ? { ...rotateMaterial } : { angle: 0, centerX: 0, centerY: 0 }
-    let effectiveOffsetMaterial = offsetMaterial ? { ...offsetMaterial } : { u: 0, v: 0 }
-
-    const rotateMatrix = mat2.create()
-    mat2.fromRotation(rotateMatrix, effectiveRotateMaterial.angle)
-    const rotateCenter = vec2.fromValues(effectiveRotateMaterial.x, effectiveRotateMaterial.y)
-    const offsetUV = vec2.fromValues(effectiveOffsetMaterial.u, effectiveOffsetMaterial.v)
-    const uvXform = {
-      enable: true,
-      rotateMatrix,
-      rotateCenter,
-      offsetUV,
-    }
-    return uvXform
-  }
-
-  uploadUVXformUniforms(renderer, uvXform) {
-    const gl = renderer._gl
-    const shaderProgram = renderer._batchState.currentShader._shaderProgram
-    if (uvXform.enable) {
-      const rotateMatrix = uvXform.rotateMatrix
-      const rotateCenter = uvXform.rotateCenter
-      const offsetUV = uvXform.offsetUV
-      if (this.locURotateMatrix === null || true) {
-        this.locURotateMatrix = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVRotate")
-        this.locURotateCenter = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVRotateCenter")
-        this.locUOffsetUV = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVOffset")
-        this.locUVXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVXformEnable")
-      }
-      gl.uniformMatrix2fv(this.locURotateMatrix, false, rotateMatrix)
-      gl.uniform2fv(this.locURotateCenter, rotateCenter)
-      gl.uniform2fv(this.locUOffsetUV, offsetUV)
-      gl.uniform1f(this.locUVXformEnable, 1.0)
-    } else {
-      if (this.locUVXformEnable === null || true) this.locUVXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVXformEnable")
-      gl.uniform1f(this.locUVXformEnable, 0.0)
-    }
-  }
-
   uploadNodeXformUniforms(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
@@ -248,14 +198,7 @@ class ObjectBufferTop {
     gl.uniform1f(locUNodeXformEnable, 1.0)
   }
 
-  disableUVXformUniforms(renderer) {
-    const gl = renderer._gl
-    const shaderProgram = renderer._batchState.currentShader._shaderProgram
-    if (this.locUVXformEnable === null || true) this.locUVXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUVXformEnable")
-    gl.uniform1f(this.locUVXformEnable, 0.0)
-  }
-
-  draw(renderer, instanceBoneBuffer, modelGltfData, rotateMaterial, offsetMaterial, phongEnable, instanceColor = null) {
+  draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
     const gl = renderer._gl;
     this._ExecuteBatch(renderer); // Flushes any pending C2 draw calls
     
@@ -265,20 +208,19 @@ class ObjectBufferTop {
       this.vao = this.createVao(renderer);
     }
     gl.bindVertexArray(this.vao);
-    const uvXform = this.createUVXform(rotateMaterial, offsetMaterial);
 
     if (instanceBoneBuffer && instanceBoneBuffer.skinAnimation) {
         // --- Skinning Path --- 
         const sharedModelUbo = modelGltfData ? modelGltfData.getOrCreateModelBoneUbo(renderer) : null;
-        // instanceBoneBuffer.uploadUniforms handles UBO, skin flags, rootNodeXform, UV xform, and dummy fallback
-        instanceBoneBuffer.uploadUniforms(sharedModelUbo, uvXform, phongEnable);
+        // instanceBoneBuffer.uploadUniforms handles UBO, skin flags, rootNodeXform, and dummy fallback
+        instanceBoneBuffer.uploadUniforms(sharedModelUbo);
         // Note: NodeXform from ObjectBuffer is not used in the skinning path; uRootNodeXform from BoneBuffer is used.
 
     } else {
         // --- Non-Skinning Path (or no specific instanceBoneBuffer for skinning) ---
         let nodeXformUploadedByBoneBuffer = false;
         if (instanceBoneBuffer) { // E.g., a BoneBuffer present but skinAnimation is false
-            instanceBoneBuffer.uploadUniformsNonSkin(renderer, uvXform, phongEnable);
+            instanceBoneBuffer.uploadUniformsNonSkin(renderer);
             // uploadUniformsNonSkin handles dummy UBO, skin disable, UV xform, and also uploads BoneBuffer.nodeXform if present.
             if (instanceBoneBuffer.nodeXform) {
                  nodeXformUploadedByBoneBuffer = true; // Assume BoneBuffer handled nodeXform if it has one
@@ -287,11 +229,6 @@ class ObjectBufferTop {
             // No BoneBuffer instance provided at all.
             // ObjectBuffer must handle UV transforms and potentially dummy UBO for "Bones" block.
             this._disableGPUSkinning(renderer);
-            if (uvXform.enable) {
-                this.uploadUVXformUniforms(renderer, uvXform);
-            } else {
-                this.disableUVXformUniforms(renderer);
-            }
 
             // Manually handle dummy UBO binding if shader expects "Bones" and no BoneBuffer did it.
             const shaderProgram = renderer._batchState.currentShader._shaderProgram;
@@ -319,9 +256,6 @@ class ObjectBufferTop {
                     console.warn("ObjectBuffer: globalThis.BoneBuffer not found, cannot bind dummy UBO even though shader expects 'Bones' block.");
                  }
             }
-            // Phong enable still needs to be set in this path if not handled by a BoneBuffer
-            const locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable");
-            if (locUPhongEnable) gl.uniform1f(locUPhongEnable, phongEnable ? 1.0 : 0.0);
         }
 
         // Upload node transform if not handled by a BoneBuffer instance (non-skinned path)
@@ -450,10 +384,6 @@ class ObjectBufferTop {
     this.locAJoints = null
     this.nodeXform = null
     this.vao = null
-    this.locURotateMatrix = null;
-    this.locURotateCenter = null;
-    this.locUOffsetUV = null;
-    this.locUVXformEnable = null;
   }
 }
 

@@ -156,11 +156,6 @@
               }
             }
           },
-          "is-wireframe-enabled": {
-            "list-name": "Is wireframe enabled",
-            "display-text": "Is wireframe enabled",
-            "description": "True if model is renered as wireframe."
-          },
           "is-playing": {
             "list-name": "Is playing",
             "display-text": "Is animation [b]{0}[/b] playing",
@@ -367,62 +362,6 @@
               }
             }
           },
-          "load-material": {
-            "list-name": "Load material",
-            "display-text": "Load material [i]{1}[/i] from [i]{0}[/i]",
-            "description": "Load material from path.",
-            "params": {
-              "material-path": {
-                "name": "Image path",
-                "desc": "Image project filename or URL to material (.png) file."
-              },
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name."
-              }
-            }
-          },
-          "load-material-from-sprite": {
-            "list-name": "Load material from sprite",
-            "display-text": "Load material [i]{1}[/i] from sprite uid [i]{0}[/i]",
-            "description": "Load material from sprite.",
-            "params": {
-              "sprite-uid": {
-                "name": "Sprite UID",
-                "desc": "Sprite instance UID."
-              },
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name."
-              }
-            }
-          },
-          "unload-material-from-sprite": {
-            "list-name": "Unload material from sprite",
-            "display-text": "Unload material [i]{0}[/i] from sprite",
-            "description": "Unload material from sprite.",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name."
-              }
-            }
-          },
-          "set-mesh-material": {
-            "list-name": "Set node material",
-            "display-text": "Set node [i]{0}[/i] to material [i]{1}[/i]",
-            "description": "Set node to use a material.",
-            "params": {
-              "mesh-name": {
-                "name": "Node name",
-                "desc": "Node name to set material to."
-              },
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name (existing or the material name used when loading)."
-              }
-            }
-          },
           "enable-node": {
             "list-name": "Enable node",
             "display-text": "Set node [i]{0}[/i] enable to [i]{1}[/i]",
@@ -449,17 +388,6 @@
             "display-text": "Disable all nodes",
             "description": "Disable all nodes for render.",
             "params": {}
-          },
-          "delete-material": {
-            "list-name": "Delete material",
-            "display-text": "Delete material [i]{0}[/i]",
-            "description": "Release material (remove from GPU memory).",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name (existing or the material name used when loading)."
-              }
-            }
           },
           "set-origin-x": {
             "list-name": "Set origin X",
@@ -505,97 +433,6 @@
               }
             }
           },
-          "enable-wireframe": {
-            "list-name": "Enable wireframe",
-            "display-text": "Set wireframe enable to [i]{0}[/i]",
-            "description": "Enable or disable wireframe render.",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable or disable node wireframe render."
-              }
-            }
-          },
-          "set-wireframe-widths": {
-            "list-name": "Set wireframe  X, Y, Z line widths",
-            "display-text": "Set wireframe line widths to [i]{0}, {1}, {2}[/i]",
-            "description": "Set wireframe X, y, Z widths.",
-            "params": {
-              "x-wireframe-width": {
-                "name": "X width",
-                "desc": "X wireframe width."
-              },
-              "y-wireframe-width": {
-                "name": "Y width",
-                "desc": "Y wireframe width."
-              },
-              "z-wireframe-width": {
-                "name": "Z width",
-                "desc": "Z wireframe width."
-              }
-            }
-          },
-          "offset-node-uv": {
-            "list-name": "Offset node UV",
-            "display-text": "Offset node [b]{0}[/b] UV by [i]({1}, {2})[/i]",
-            "description": "Offset a nodes UV texture coordinates.",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name to offset UVs."
-              },
-              "u-offset": {
-                "name": "U Offset",
-                "desc": "U Offset (-1.0 to 1.0)."
-              },
-              "v-offset": {
-                "name": "V Offset",
-                "desc": "V Offset (-1.0 to 1.0)."
-              }
-            }
-          },
-          "offset-material-uv": {
-            "list-name": "Offset material UV",
-            "display-text": "Offset material [b]{0})[/b] UV by [i]({1}, {2})[/i]",
-            "description": "Offset material UV texture coordinates.",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name to offset UVs."
-              },
-              "u-offset": {
-                "name": "U Offset",
-                "desc": "U Offset (-1.0 to 1.0)."
-              },
-              "v-offset": {
-                "name": "V Offset",
-                "desc": "V Offset (-1.0 to 1.0)."
-              }
-            }
-          },
-          "rotate-material-uv": {
-            "list-name": "Rotate material UV",
-            "display-text": "Rotate material [b]{0})[/b] UV by {1} degrees around [i]({2}, {3})[/i]",
-            "description": "Rotate material UV texture coordinates around point.",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name to rotate UVs."
-              },
-              "angle": {
-                "name": "Angle",
-                "desc": "Angle in degrees."
-              },
-              "x": {
-                "name": "X",
-                "desc": "Center X to rotate around (0-1)."
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Center Y to rotate around (0-1)."
-              }
-            }
-          },
           "load-model-from-template": {
             "list-name": "Load model from prefab instance",
             "display-text": "Load model from prefab uid [i]{0}[/i]",
@@ -615,51 +452,6 @@
               "blend-time": {
                 "name": "Blend time",
                 "desc": "Blend time in seconds."
-              }
-            }
-          },
-          "set-node-morph-weight": {
-            "list-name": "Set node morph target weight",
-            "display-text": "Set node [b]{0}[/b] target [i]{1}[/i] weight to [i]{2}[/i]",
-            "description": "Set node morph target weight.",
-            "params": {
-              "name": {
-                "name": "Node name",
-                "desc": "Node name."
-              },
-              "index": {
-                "name": "Target",
-                "desc": "Target index."
-              },
-              "weight": {
-                "name": "Weight",
-                "desc": "Target weight."
-              }
-            }
-          },
-          "delete-node-morph-weight": {
-            "list-name": "Delete node morph target weight",
-            "display-text": "Delete node [b]{0}[/b] target [i]{1}[/i] weight",
-            "description": "Delete node morph target weight.",
-            "params": {
-              "name": {
-                "name": "Node name",
-                "desc": "Node name."
-              },
-              "index": {
-                "name": "Target",
-                "desc": "Target index."
-              }
-            }
-          },
-          "set-vertex-rounding": {
-            "list-name": "Set vertex rounding",
-            "display-text": "Set vertex rounding to [i]{0}[/i]",
-            "description": "Set vertex rounding (typically 1, 2, 3, etc.).",
-            "params": {
-              "round": {
-                "name": "Round",
-                "desc": "Round value, typically an integer."
               }
             }
           },
@@ -844,96 +636,6 @@
           "use-bone-bounding-box": {
             "description": "Returns 1 if bone-based bounding box is enabled, 0 if using static bounding box.",
             "translated-name": "UseBoneBoundingBox",
-            "params": {}
-          },
-          "x-wireframe-width": {
-            "description": "X wireframe line width.",
-            "translated-name": "XWireframeWidth",
-            "params": {}
-          },
-          "y-wireframe-width": {
-            "description": "Y wireframe line width.",
-            "translated-name": "YWireframeWidth",
-            "params": {}
-          },
-          "z-wireframe-width": {
-            "description": "Z wireframe line width.",
-            "translated-name": "ZWireframeWidth",
-            "params": {}
-          },
-          "u-offset": {
-            "description": "U offset on node.",
-            "translated-name": "UOffset",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name of offset U."
-              }
-            }
-          },
-          "v-offset": {
-            "description": "V offset on node.",
-            "translated-name": "VOffset",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name of offset V."
-              }
-            }
-          },
-          "material-u-offset": {
-            "description": "U offset on node.",
-            "translated-name": "MaterialUOffset",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name of offset U."
-              }
-            }
-          },
-          "material-v-offset": {
-            "description": "V offset on material.",
-            "translated-name": "MaterialVOffset",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name of offset V."
-              }
-            }
-          },
-          "material-rotate-angle": {
-            "description": "Rotation angle of material.",
-            "translated-name": "MaterialRotateAngle",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name of rotate angle."
-              }
-            }
-          },
-          "material-rotate-x": {
-            "description": "Rotation center X of material.",
-            "translated-name": "MaterialRotateX",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name of rotation center x."
-              }
-            }
-          },
-          "material-rotate-y": {
-            "description": "Rotation center Y of material.",
-            "translated-name": "MaterialRotateY",
-            "params": {
-              "material-name": {
-                "name": "Material name",
-                "desc": "Material name of rotation center Y."
-              }
-            }
-          },
-          "materials": {
-            "description": "Material list in JSON string format.",
-            "translated-name": "Materials",
             "params": {}
           },
           "node-point-position": {

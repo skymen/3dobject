@@ -67,10 +67,6 @@ class BoneBufferTop {
     }
 
     // Uniform locations
-    this.locURotateMatrix = null;
-    this.locURotateCenter = null;
-    this.locUOffsetUV = null;
-    this.locUVXformEnable = null;
     this.locUSkinEnable = null;
     this.locARootNodeXform = null;
     this.locUNodeXformEnable = null;
@@ -88,10 +84,6 @@ class BoneBufferTop {
     this.gl = null;
     this.rendererForShaderAccess = null;
     // Reset other properties as before
-    this.locURotateMatrix = null;
-    this.locURotateCenter = null;
-    this.locUOffsetUV = null;
-    this.locUVXformEnable = null;
     this.locUSkinEnable = null;
     this.locARootNodeXform = null;
     this.locUNodeXformEnable = null;
@@ -107,13 +99,6 @@ class BoneBufferTop {
 
     this.boundProgram = shaderProgram;
     const gl = this.gl;
-
-    if (this.locURotateMatrix === null || true) {
-      this.locURotateMatrix = gl.getUniformLocation(shaderProgram, "uUVRotate");
-      this.locURotateCenter = gl.getUniformLocation(shaderProgram, "uUVRotateCenter");
-      this.locUOffsetUV = gl.getUniformLocation(shaderProgram, "uUVOffset");
-      this.locUVXformEnable = gl.getUniformLocation(shaderProgram, "uUVXformEnable");
-    }
 
     this.locUSkinEnable = gl.getUniformLocation(shaderProgram, "uSkinEnable");
     this.locARootNodeXform = gl.getUniformLocation(shaderProgram, "uRootNodeXform");
@@ -170,29 +155,7 @@ class BoneBufferTop {
     }
   }
 
-  uploadUVXformUniforms(renderer, uvXform) {
-    const gl = renderer._gl; // Use passed renderer consistently
-    const shaderProgram = renderer._batchState.currentShader._shaderProgram;
-    const rotateMatrix = uvXform.rotateMatrix;
-    const rotateCenter = uvXform.rotateCenter;
-    const offsetUV = uvXform.offsetUV;
-    
-    this._updateShader(shaderProgram);
-
-    if (this.locURotateMatrix === null || true) {
-      this.locURotateMatrix = gl.getUniformLocation(shaderProgram, "uUVRotate");
-      this.locURotateCenter = gl.getUniformLocation(shaderProgram, "uUVRotateCenter");
-      this.locUOffsetUV = gl.getUniformLocation(shaderProgram, "uUVOffset");
-      this.locUVXformEnable = gl.getUniformLocation(shaderProgram, "uUVXformEnable");
-    }
-
-    if (this.locURotateMatrix) gl.uniformMatrix2fv(this.locURotateMatrix, false, rotateMatrix);
-    if (this.locURotateCenter) gl.uniform2fv(this.locURotateCenter, rotateCenter);
-    if (this.locUOffsetUV) gl.uniform2fv(this.locUOffsetUV, offsetUV);
-    if (this.locUVXformEnable) gl.uniform1f(this.locUVXformEnable, 1.0);
-  }
-
-  uploadUniforms(targetSharedGpuUbo, uvXform, phongEnable) {
+  uploadUniforms(targetSharedGpuUbo) {
     const gl = this.gl;
     const shaderProgram = this.rendererForShaderAccess._batchState.currentShader._shaderProgram;
 
@@ -202,7 +165,7 @@ class BoneBufferTop {
     // This BoneBuffer instance does not own the UBO. It uploads to the targetSharedGpuUbo.
     if (!this.skinAnimation) {
         console.error("BoneBuffer: uploadUniforms called but skinAnimation is false. This should go via uploadUniformsNonSkin.");
-        this.uploadUniformsNonSkin(this.rendererForShaderAccess, uvXform, phongEnable); // Redirect to be safe
+        this.uploadUniformsNonSkin(this.rendererForShaderAccess); // Redirect to be safe
         return;
     }
 
@@ -243,23 +206,13 @@ class BoneBufferTop {
     if (this.locUSkinEnable === null || true) {
       this.locUSkinEnable = gl.getUniformLocation(shaderProgram, "uSkinEnable");
       this.locARootNodeXform = gl.getUniformLocation(shaderProgram, "uRootNodeXform");
-      this.locUPhongEnable = gl.getUniformLocation(shaderProgram, "uPhongEnable");
     }
-    
+
     if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 1.0); // Enable skinning
     if (this.locARootNodeXform && this.rootNodeXform) gl.uniformMatrix4fv(this.locARootNodeXform, false, this.rootNodeXform);
-
-    if (uvXform.enable) { 
-        this.uploadUVXformUniforms(this.rendererForShaderAccess, uvXform);
-    } else {
-        if (this.locUVXformEnable === null || true) this.locUVXformEnable = gl.getUniformLocation(shaderProgram, "uUVXformEnable");
-        if (this.locUVXformEnable) gl.uniform1f(this.locUVXformEnable, 0.0);
-    }
-    
-    if (this.locUPhongEnable) gl.uniform1f(this.locUPhongEnable, phongEnable ? 1.0 : 0.0);
   }
 
-  uploadUniformsNonSkin(renderer, uvXform, phongEnable) {
+  uploadUniformsNonSkin(renderer) {
     const gl = renderer._gl; // Use passed renderer
     const shaderProgram = renderer._batchState.currentShader._shaderProgram;
 
@@ -289,32 +242,13 @@ class BoneBufferTop {
       this.locUSkinEnable = gl.getUniformLocation(shaderProgram, "uSkinEnable");
       this.locUNodeXformEnable = gl.getUniformLocation(shaderProgram, "uNodeXformEnable");
       this.locANodeXform = gl.getUniformLocation(shaderProgram, "uNodeXform");
-      this.locUPhongEnable = gl.getUniformLocation(shaderProgram, "uPhongEnable");
     }
 
     if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 0.0); // Disable skinning
     if (this.locUNodeXformEnable) gl.uniform1f(this.locUNodeXformEnable, 1.0); // Enable node transform
     if (this.locANodeXform && this.nodeXform) gl.uniformMatrix4fv(this.locANodeXform, false, this.nodeXform);
-
-    if (uvXform.enable) { 
-        this.uploadUVXformUniforms(renderer, uvXform); // Pass renderer
-    } else {
-        if (this.locUVXformEnable === null || true) this.locUVXformEnable = gl.getUniformLocation(shaderProgram, "uUVXformEnable");
-        if (this.locUVXformEnable) gl.uniform1f(this.locUVXformEnable, 0.0);
-    }
-
-    if (this.locUPhongEnable) gl.uniform1f(this.locUPhongEnable, phongEnable ? 1.0 : 0.0);
   }
 
-  disable(renderer) {
-       const gl = renderer._gl;
-       const shaderProgram = renderer._batchState.currentShader._shaderProgram;
-       if (this.locUVXformEnable === null || true) this.locUVXformEnable = gl.getUniformLocation(shaderProgram, "uUVXformEnable");
-       if (this.locUVXformEnable) gl.uniform1f(this.locUVXformEnable, 0.0);
-       // Potentially disable other things if this method is still used broadly.
-       // If skinning was active and this instance is being disabled, ensure skinning uniform is off.
-       // if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 0.0);
-  }
 }
 
 // @ts-ignore

@@ -14,7 +14,6 @@ let maxBB = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE
 let buffLength = 0
 let buffBonesLength = 0
 let disabledNodes = new Map()
-let nodeMorphWeights = new Map()
 let activeNodes = []
 let nodeIndex = 0
 let bonesIndex = 0
@@ -43,7 +42,6 @@ function freshInstanceState() {
     blendTime: 0,
     lastIndex: 0,
     disabledNodes: new Map(),
-    nodeMorphWeights: new Map(),
   }
 }
 
@@ -102,7 +100,6 @@ function activateInstance(iid) {
   blendTime = record.blendTime
   lastIndex = record.lastIndex
   disabledNodes = record.disabledNodes
-  nodeMorphWeights = record.nodeMorphWeights
   return true
 }
 
@@ -245,26 +242,6 @@ function OnMessage(e) {
       }
       deactivateInstance()
       break
-    case "setNodeMorphWeight": {
-      if (!activateInstance(e.data.iid)) break
-      const nodeName = e.data.nodeName
-      const index = e.data.index
-      const weight = e.data.weight
-      if (!nodeMorphWeights.has(nodeName)) nodeMorphWeights.set(nodeName, new Map())
-      nodeMorphWeights.get(nodeName).set(index, weight)
-      deactivateInstance()
-      break
-    }
-    case "deleteNodeMorphWeight": {
-      if (!activateInstance(e.data.iid)) break
-      const nodeName = e.data.nodeName
-      const index = e.data.index
-      if (nodeMorphWeights.has(nodeName)) {
-        nodeMorphWeights.get(nodeName).delete(index)
-      }
-      deactivateInstance()
-      break
-    }
     default:
       console.warn("unknown message type:", e.data.type)
   }
@@ -292,7 +269,6 @@ function release() {
   // @ts-ignore
   buffBonesLength = null
   disabledNodes.clear()
-  nodeMorphWeights.clear()
   instances.clear()
   sharedGltf = null
   currentRecord = null
@@ -667,16 +643,10 @@ function getPolygonsPrep(editorData) {
       let morphTargets = null
       let morphWeights = null
 
-      const nodeMorphWeightSet = nodeMorphWeights.get(node.name)
-      if (node.weights || nodeMorphWeightSet) {
+      if (node.weights) {
         morphActive = true
         morphTargets = node.mesh.primitives[i].targets
-        if (!node.weights) node.weights = new Float32Array(morphTargets.length)
-        morphWeights = [...node.weights]
-        if (nodeMorphWeightSet)
-          for (let j = 0; j < morphWeights.length; j++) {
-            if (nodeMorphWeightSet.has(j)) morphWeights[j] = nodeMorphWeightSet.get(j)
-          }
+        morphWeights = node.weights
       }
 
       activeNodes.push(nodeIndex)
@@ -772,16 +742,10 @@ function transformNode(node, parentMat, modelScaleRotate, isEditor, gpuSkinning)
       let morphTargets = null
       let morphWeights = null
 
-      const nodeMorphWeightSet = nodeMorphWeights.get(node.name)
-      if (node.weights || nodeMorphWeightSet) {
+      if (node.weights) {
         morphActive = true
         morphTargets = node.mesh.primitives[i].targets
-        if (!node.weights) node.weights = new Float32Array(morphTargets.length)
-        morphWeights = [...node.weights]
-        if (nodeMorphWeightSet)
-          for (let j = 0; j < morphWeights.length; j++) {
-            if (nodeMorphWeightSet.has(j)) morphWeights[j] = nodeMorphWeightSet.get(j)
-          }
+        morphWeights = node.weights
       }
 
       activeNodes.push(nodeIndex)

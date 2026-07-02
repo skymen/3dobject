@@ -116,99 +116,9 @@
       this.updateBbox = true
     },
 
-    async LoadMaterial(materialPath, materialName) {
-      if (!this.loaded) return
-      const textures = this.instanceModel ? this.texture : this.sdkType.texture
 
-      if (!textures) return
-      if (!materialName || !materialPath) return
-      const renderer = this.renderer
-      let textureURI = await this.runtime.GetAssetManager().GetProjectFileUrl(materialPath)
-      let response = await fetch(textureURI, { mode: "cors" })
-      let blob = await response.blob()
-      let imageBitmap
-      if (typeof globalThis.createImageBitmap === "function") {
-        imageBitmap = await createImageBitmap(blob)
-      } else {
-        //@ts-ignore
-        imageBitmap = await globalThis.GltfData.createImageBitmap(blob)
-      }
 
-      if (!imageBitmap) return
 
-      const width = imageBitmap.width
-      const height = imageBitmap.height
-      const sampling = this.runtime.GetSampling()
-      let options = { sampling: sampling }
-
-      // Free the previous texture if this material name is being replaced — unless it
-      // belongs to the cross-type model cache (other types may still be using it;
-      // the cache frees it with the last reference)
-      const oldTexture = textures[materialName]
-      if (oldTexture) {
-        const cacheTextures = !this.instanceModel && this.sdkType?.gltfData?._cacheEntry?.textures
-        if (!(cacheTextures && cacheTextures[materialName] === oldTexture)) {
-          renderer.DeleteTexture(oldTexture)
-        }
-      }
-      textures[materialName] = renderer.CreateDynamicTexture(width, height, options)
-      await renderer.UpdateTexture(imageBitmap, textures[materialName])
-      textures[materialName].materialPath = materialPath
-      if (typeof imageBitmap.close === "function") imageBitmap.close()
-    },
-
-    async LoadMaterialFromSprite(materialUID, materialName) {
-      if (!this.loaded) return
-      if (!materialName || !materialUID) return
-      this.spriteTextures.set(materialName, materialUID)
-    },
-
-    async UnloadMaterialFromSprite(materialName) {
-      if (!this.loaded) return
-      if (!materialName) return
-      this.spriteTextures.delete(materialName)
-    },
-
-    SetMeshMaterial(nodeName, materialName) {
-      const meshName = this.gltf.nodeMeshMap[nodeName]
-      if (!meshName) {
-        if (this.debug) console.warn("[3DObject] SetMeshMaterial node not found", nodeName)
-        return
-      }
-
-      const textures = this.instanceModel ? this.texture : this.sdkType.texture
-      if (!(materialName in textures)) {
-        if (this.debug) console.warn("[3DObject] SetMeshMaterial material not found", materialName)
-        return
-      }
-      for (let ii = 0; ii < this.gltf.gltfData.skinnedNodes.length; ii++) {
-        let node = this.gltf.gltfData.skinnedNodes[ii]
-        let mesh = node.mesh
-        if (!mesh) continue
-        if (mesh.name === meshName) {
-          for (let jj = 0; jj < mesh.primitives.length; jj++) {
-            let primitive = mesh.primitives[jj]
-            if ("material" in primitive)
-              primitive.material = { name: materialName, pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }
-          }
-        }
-      }
-
-      for (let ii = 0; ii < this.gltf.gltfData.nodes.length; ii++) {
-        let node = this.gltf.gltfData.nodes[ii]
-        let mesh = node.mesh
-        if (!mesh) continue
-        if (mesh.name === meshName) {
-          for (let jj = 0; jj < mesh.primitives.length; jj++) {
-            let primitive = mesh.primitives[jj]
-            if (!primitive) continue
-            if ("material" in primitive)
-              primitive.material = { name: materialName, pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }
-          }
-        }
-      }
-      this.renderOnce = true
-    },
 
     EnableNode(nodeName, enable) {
       if (!this.gltf) return
@@ -287,57 +197,9 @@
       this.allNodesDisabled = true
     },
 
-    SetNodeMorphWeight(nodeName, index, weight) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
 
-      const node = this._findNode(nodeName)
-      if (!node) return
-      if (!node.morphWeights) node.morphWeights = new Map()
-      node.morphWeights.set(index, weight)
-      this.renderOnce = true
-      if (this.workerAnimation) {
-        this.gltf.setNodeMorphWeight(nodeName, index, weight)
-      }
-    },
 
-    DeleteNodeMorphWeight(nodeName, index) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
 
-      const node = this._findNode(nodeName)
-      if (!node) return
-      if (!node.morphWeights) return
-      node.morphWeights.delete(index)
-      this.renderOnce = true
-      if (this.workerAnimation) {
-        this.gltf.deleteNodeMorphWeight(nodeName, index)
-      }
-    },
-
-    OffsetNodeUV(nodeName, u, v) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
-
-      const node = this._findNode(nodeName)
-      if (!node) return
-      node.offsetUV = { u: u, v: v }
-      this.renderOnce = true
-    },
-
-    DeleteMaterial(materialName) {
-      const renderer = this.renderer
-      const textures = this.instanceModel ? this.texture : this.sdkType.texture
-      if (materialName in textures) {
-        // Textures owned by the cross-type model cache are freed with the last
-        // reference, not here — other types may still be using them
-        const cacheTextures = !this.instanceModel && this.sdkType?.gltfData?._cacheEntry?.textures
-        if (!(cacheTextures && cacheTextures[materialName] === textures[materialName])) {
-          renderer.DeleteTexture(textures[materialName])
-        }
-        delete textures[materialName]
-      }
-    },
 
     SetOriginX(xOrigin) {
       const wi = this.GetWorldInfo()
@@ -361,15 +223,7 @@
       this.updateBbox = true
     },
 
-    EnableWireframe(enable) {
-      this.wireframe = enable
-    },
 
-    SetWireframeWidths(x, y, z) {
-      this.xWireframeWidth = x
-      this.yWireframeWidth = y
-      this.zWireframeWidth = z
-    },
 
     LoadModelFromTemplate(uid) {
       if (!this.instanceModel) {
@@ -404,38 +258,7 @@
       this.animationBlend = blendTime
     },
 
-    OffsetMaterialUV(materialName, u, v) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
 
-      if (this.materialsModify.has(materialName)) {
-        const materialModify = this.materialsModify.get(materialName)
-        materialModify.offsetUV = { u: u, v: v }
-        this.materialsModify.set(materialName, materialModify)
-      } else {
-        this.materialsModify.set(materialName, { offsetUV: { u: u, v: v } })
-      }
-      this.renderOnce = true
-    },
-
-    RotateMaterialUV(materialName, angle, x, y) {
-      if (!this.gltf) return
-      if (!this.gltf.gltfData) return
-
-      // Change to angle radians
-      angle = (angle * Math.PI) / 180
-      if (this.materialsModify.has(materialName)) {
-        const materialModify = this.materialsModify.get(materialName)
-        materialModify.rotateUV = { angle: angle, x: x, y: y }
-        this.materialsModify.set(materialName, materialModify)
-      } else {
-        this.materialsModify.set(materialName, { rotateUV: { angle: angle, x: x, y: y } })
-      }
-      this.renderOnce = true
-    },
-    SetVertexRounding(round) {
-      this.vertexScale = round == 0 ? 0 : 1 / round
-    },
 
     SetQuaternion(quaternion, x, y, z) {
       this._setQuaternion(quaternion, x, y, z)
