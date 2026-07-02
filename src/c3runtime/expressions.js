@@ -2,6 +2,7 @@
 {
   self.C3.Plugins.Mikal_3DObject.Exps = {
     AnimationNames() {
+      if (!this.gltf) return "[]"
       return JSON.stringify(this.gltf.getAnimationNames())
     },
     ZElevation0() {

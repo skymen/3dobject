@@ -278,8 +278,7 @@ class GltfData {
     }
 
     if (gltfURI === null) {
-      alert("gltfPath not found: " + gltfPath)
-      if (this._debug) console.warn("glfPath not found:", gltfPath)
+      console.error("[3DObject] gltfPath not found:", gltfPath)
       return false
     }
 
@@ -293,8 +292,7 @@ class GltfData {
     try {
       resultgltf = await this.loadGLTF(gltfURI, isRuntime, debug, isBinary)
     } catch (err) {
-      alert("Error loading GLTF:" + err)
-      if (this._debug) console.error("Error loading GLTF:", err)
+      console.error("[3DObject] Error loading GLTF:", err)
       return false
     }
 
@@ -302,8 +300,7 @@ class GltfData {
       if (debug) console.info("[3DObject] modelData:", resultgltf)
       sdkType.dataLoaded = true
     } else {
-      if (this._debug) console.warn("[3DObject] Unable to load gltf files")
-      alert("Unable to load gltf files")
+      console.error("[3DObject] Unable to load gltf files")
       return false
     }
 
@@ -447,14 +444,14 @@ class GltfData {
       // Initialize Draco decoder with JS code for editor mode
       await this._initEditorDracoDecoder()
       // Process meshes with Draco support enabled
-      await this._processMeshes(gltf)
+      if (!(await this._processMeshes(gltf))) return false
       // Now process remaining accessors (non-Draco ones)
-      await this._processAccessors(gltf)
+      if (!(await this._processAccessors(gltf))) return false
     } else {
       // Process meshes first to handle Draco compression, then process accessors
-      await this._processMeshes(gltf)
+      if (!(await this._processMeshes(gltf))) return false
       // Now process remaining accessors (non-Draco ones)
-      await this._processAccessors(gltf)
+      if (!(await this._processAccessors(gltf))) return false
     }
 
     // scene
@@ -593,10 +590,8 @@ class GltfData {
             }
           }
         } catch (err) {
-          if (debug) console.error("Error loading image:", err)
-          alert("Error loading image: " + err)
-          blob = null
-          return
+          console.error("[3DObject] Error loading image:", err)
+          return false
         }
         let imageBitmap
         // @ts-ignore
@@ -614,7 +609,7 @@ class GltfData {
     }
 
     // Standard GLTF processing for non-Draco primitives (after Draco has been handled)
-    await this._processStandardPrimitives(gltf)
+    if (!(await this._processStandardPrimitives(gltf))) return false
 
     // Compact accessors: accessor data are views over the whole GLB binary (including
     // embedded image bytes already extracted above), which keeps the entire binary alive.
@@ -1081,8 +1076,7 @@ class GltfData {
       let bufview = bufferViews[a.bufferView];
       if (!bufview) {
         if (this._debug) console.error(`[ERROR] BufferView ${a.bufferView} not found for accessor ${i}:`, a)
-        alert("error: gltf, unhandled bufferView for non-sparse accessor. Accessor index: " + i)
-        if (this._debug) console.error("error: gltf, unhandled bufferView for non-sparse accessor", a)
+        console.error("[3DObject] gltf: unhandled bufferView for non-sparse accessor. Accessor index:", i, a)
         return false; // Critical error
       }
 

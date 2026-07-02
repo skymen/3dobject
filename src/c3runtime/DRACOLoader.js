@@ -202,7 +202,6 @@ class DRACODecoder {
 	_loadLibrary( url, responseType ) {
 		const loader = new Promise( async ( resolve, reject ) => {
 			try {
-				console.log('🔥 DRACOLoader: Loading library with CORS mode:', responseType);
 				
 				// Use CORS mode fetch like gltfData.js does
 				const response = await fetch(url, { mode: "cors" });
@@ -220,7 +219,6 @@ class DRACODecoder {
 					result = await response.blob();
 				}
 				
-				console.log('🔥 DRACOLoader: Library loaded successfully');
 				resolve(result);
 			} catch (error) {
 				console.error('🔥 DRACOLoader: Failed to load library:', error);
@@ -237,7 +235,6 @@ class DRACODecoder {
 	 * @returns {Promise} Promise that resolves when decoder is ready
 	 */
 	async _initEditorDecoder() {
-		console.log('🔥 DRACOLoader: Initializing EDITOR mode decoder with JS string');
 		
 		if (!this.jsDecoderString) {
 			throw new Error('DRACOLoader: No JS decoder string provided for editor mode');
@@ -250,7 +247,6 @@ class DRACODecoder {
 		// Create worker source with embedded Draco module
 		this.workerSourceURL = this._createEditorWorker();
 		
-		console.log('🔥 DRACOLoader: Editor mode decoder initialized successfully');
 		return Promise.resolve();
 	}
 
@@ -262,17 +258,14 @@ class DRACODecoder {
 	async _initRuntimeDecoder() {
 		const scope = this;
 		
-		console.log('🔥 DRACOLoader: Initializing RUNTIME mode decoder with URL loading');
 		
 		// Use GetProjectFileUrl method like gltfWorker.min.js
 		let wasmURL, jsURL;
 		
 		if (this.runtime && this.runtime.GetAssetManager) {
-			console.log('🔥 DRACOLoader: Using Construct 3 asset manager (same as gltfWorker)');
 			// Use GetProjectFileUrl to avoid CORS issues - same method as gltfWorker.min.js
 			wasmURL = await this.runtime.GetAssetManager().GetProjectFileUrl("draco_decoder.wasm");
 			jsURL = await this.runtime.GetAssetManager().GetProjectFileUrl("draco_wasm_wrapper.js");
-			console.log('🔥 DRACOLoader: Asset URLs resolved successfully');
 		} else {
 			console.error('🔥 DRACOLoader: Runtime not available - cannot load DRACO files');
 			throw new Error('DRACOLoader: Runtime not available - cannot load DRACO files');
@@ -319,7 +312,6 @@ class DRACODecoder {
 	 * @returns {string} Blob URL for the worker
 	 */
 	_createEditorWorker() {
-		console.log('🔥 DRACOLoader: Creating editor mode worker with embedded JS decoder');
 		
 		const fn = DRACOWorker.toString();
 		
@@ -329,7 +321,6 @@ class DRACODecoder {
 			if (this.jsDecoderString) {
 				// The decoder string is Base64-encoded to safely handle any JavaScript content
 				decoderCode = atob(this.jsDecoderString);
-				console.log('🔥 DRACOLoader: Successfully decoded Base64 decoder string, length:', decoderCode.length);
 			} else {
 				throw new Error('No embedded decoder string found');
 			}
@@ -361,16 +352,14 @@ class DRACODecoder {
 	 */
 	async _initDecoder() {
 		if (this.isEditorMode) {
-			console.log('🔥 DRACOLoader: Routing to editor mode initialization');
 			return this._initEditorDecoder();
 		} else {
-			console.log('🔥 DRACOLoader: Routing to runtime mode initialization');
 			return this._initRuntimeDecoder();
 		}
 	}
 
 	_getWorker( taskID, taskCost ) {
-		return this._initDecoder().then( () => {
+		return this.preload().then( () => {
 			if ( this.workerPool.length < this.workerLimit ) {
 				const worker = new Worker( this.workerSourceURL );
 				worker._callbacks = {};
@@ -381,14 +370,12 @@ class DRACODecoder {
 				let configToSend = { ...this.decoderConfig };
 				
 				if (this.isEditorMode) {
-					console.log('🔥 DRACOLoader: Initializing editor mode worker');
 					// Editor mode: simple config, no WASM binary
 					worker.postMessage( {
 						type: 'init',
 						decoderConfig: configToSend
 					} );
 				} else {
-					console.log('🔥 DRACOLoader: Initializing runtime mode worker');
 					// Runtime mode: handle WASM binary if available
 					if (this.decoderBinary && this.decoderBinary instanceof ArrayBuffer) {
 						// Clone WASM binary for worker
@@ -397,11 +384,19 @@ class DRACODecoder {
 					
 					worker.postMessage( {
 						type: 'init',
-						decoderConfig: configToSend,
-						decoderBinary: this.decoderBinary
+						decoderConfig: configToSend
 					} );
 				}
 
+				const rejectAllTasks = ( w, reason ) => {
+					const err = new Error( String( reason ) );
+					for ( const id in w._callbacks ) {
+						w._callbacks[ id ].reject( err );
+						delete w._callbacks[ id ];
+						delete w._taskCosts[ id ];
+					}
+					w._taskLoad = 0;
+				};
 				worker.onmessage = function( e ) {
 					const message = e.data;
 					switch ( message.type ) {
@@ -409,11 +404,18 @@ class DRACODecoder {
 							worker._callbacks[ message.id ].resolve( message );
 							break;
 						case 'error':
-							worker._callbacks[ message.id ].reject( message );
+							if ( worker._callbacks[ message.id ] ) worker._callbacks[ message.id ].reject( new Error( message.error || 'Draco decode failed' ) );
+							else rejectAllTasks( worker, message.error || 'Draco decode failed' );
+							break;
+						case 'init-error':
+							rejectAllTasks( worker, message.error || 'Draco decoder init failed' );
 							break;
 						default:
-							console.error( 'THREE.DRACOLoader: Unexpected message, "' + message.type + '"' );
+							console.error( 'DRACOLoader: Unexpected message, "' + message.type + '"' );
 					}
+				};
+				worker.onerror = function( e ) {
+					rejectAllTasks( worker, ( e && e.message ) || 'Draco worker error' );
 				};
 
 				this.workerPool.push( worker );
@@ -466,30 +468,29 @@ function DRACOWorker() {
 			case 'init':
 				decoderConfig = message.decoderConfig;
 				
-				console.log('🔥 Worker: Initializing with config type:', decoderConfig.type);
-				
 				if (decoderConfig.embedded) {
-					console.log('🔥 Worker: Using embedded decoder for editor mode');
 					// Editor mode: embedded decoder, no external file loading
-					decoderPending = new Promise( function ( resolve ) {
+					decoderPending = new Promise( function ( resolve, reject ) {
 						decoderConfig.onModuleLoaded = function ( draco ) {
-							console.log('🔥 Worker: Embedded decoder loaded successfully');
 							resolve( { draco: draco } );
 						};
-						DracoDecoderModule( decoderConfig );
+						try {
+							DracoDecoderModule( decoderConfig );
+						} catch ( err ) {
+							reject( err );
+						}
+					} );
+					decoderPending.catch( function ( err ) {
+						self.postMessage( { type: 'init-error', error: ( err && err.message ) || String( err ) } );
 					} );
 				} else {
-					console.log('🔥 Worker: Using runtime decoder with external files');
 					// Runtime mode: handle WASM binary if available
 					if (decoderConfig.wasmBinary) {
-						console.log('🔥 Worker: Creating blob URL for WASM binary');
 						const wasmBlob = new Blob([decoderConfig.wasmBinary], { type: 'application/wasm' });
 						const wasmBlobURL = URL.createObjectURL(wasmBlob);
 						
 						decoderConfig.locateFile = function(path) {
-							console.log('🔥 Worker: locateFile called with:', path);
 							if (path.endsWith('.wasm') || path === 'draco_decoder.wasm') {
-								console.log('🔥 Worker: Returning blob URL for WASM');
 								return wasmBlobURL;
 							}
 							return path;
@@ -499,12 +500,18 @@ function DRACOWorker() {
 						delete decoderConfig.wasmBinary;
 					}
 					
-					decoderPending = new Promise( function ( resolve ) {
+					decoderPending = new Promise( function ( resolve, reject ) {
 						decoderConfig.onModuleLoaded = function ( draco ) {
-							console.log('🔥 Worker: Runtime decoder loaded successfully');
 							resolve( { draco: draco } );
 						};
-						DracoDecoderModule( decoderConfig );
+						try {
+							DracoDecoderModule( decoderConfig );
+						} catch ( err ) {
+							reject( err );
+						}
+					} );
+					decoderPending.catch( function ( err ) {
+						self.postMessage( { type: 'init-error', error: ( err && err.message ) || String( err ) } );
 					} );
 				}
 				break;
@@ -527,6 +534,8 @@ function DRACOWorker() {
 					} finally {
 						draco.destroy( decoder );
 					}
+				} ).catch( ( err ) => {
+					self.postMessage( { type: 'error', id: message.id, error: ( err && err.message ) || String( err ) } );
 				} );
 				break;
 		}

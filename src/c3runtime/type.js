@@ -56,25 +56,30 @@
             if (cacheEntry) {
                 if (gltfData.dynamicTexturesLoaded === true || gltfData.dynamicTexturesLoaded === null) return;
                 gltfData.dynamicTexturesLoaded = null;
-                if (!cacheEntry.texturesPromise) {
-                    cacheEntry.renderer = renderer;
-                    cacheEntry.texturesPromise = this._uploadCachedTextures(renderer, cacheEntry);
+                try {
+                    if (!cacheEntry.texturesPromise) {
+                        cacheEntry.renderer = renderer;
+                        cacheEntry.texturesPromise = this._uploadCachedTextures(renderer, cacheEntry);
+                    }
+                    const shared = await cacheEntry.texturesPromise;
+                    for (const name in shared.textures) {
+                        textures[name] = shared.textures[name];
+                    }
+                    whiteTextureOwner.whiteTexture = shared.whiteTexture;
+                    gltfData.dynamicTexturesLoaded = true;
+                } catch (err) {
+                    // Reset the in-progress sentinel so the next draw retries
+                    console.error("[3DObject] texture upload failed", err);
+                    gltfData.dynamicTexturesLoaded = false;
+                    cacheEntry.texturesPromise = null;
                 }
-                const shared = await cacheEntry.texturesPromise;
-                for (const name in shared.textures) {
-                    textures[name] = shared.textures[name];
-                }
-                whiteTextureOwner.whiteTexture = shared.whiteTexture;
-                gltfData.dynamicTexturesLoaded = true;
                 return;
             }
-
-            const gltf = gltfData.gltf;
 
             if (gltfData.dynamicTexturesLoaded === true || gltfData.dynamicTexturesLoaded === null) return;
             gltfData.dynamicTexturesLoaded = null;
 
-
+            try {
             // White texture for solid color
             const width = gltfData.whiteImageBitmap.width;
             const height = gltfData.whiteImageBitmap.height;
@@ -102,6 +107,10 @@
             }
 
             gltfData.dynamicTexturesLoaded = true;
+            } catch (err) {
+                console.error("[3DObject] texture upload failed", err);
+                gltfData.dynamicTexturesLoaded = false;
+            }
         }
 
         async _uploadCachedTextures(renderer, entry)

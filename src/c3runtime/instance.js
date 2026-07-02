@@ -41,6 +41,7 @@
       this.allNodesDisabled = false
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
       this._released = false
+      this._drewCustomBuffers = false
 
       // Track last position for detecting position changes
       this._lastX = 0
@@ -106,7 +107,9 @@
 
       // If needed load textures
       if (this.sdkType.gltfData.dynamicTexturesLoaded !== true) {
-        this.sdkType.LoadDynamicTextures(this.renderer, this.sdkType.gltfData, this.sdkType.texture, this.sdkType)
+        this.sdkType
+          .LoadDynamicTextures(this.renderer, this.sdkType.gltfData, this.sdkType.texture, this.sdkType)
+          .catch((err) => console.error("[3DObject] texture load failed", err))
       }
 
       this.loaded = true
@@ -189,7 +192,7 @@
           // } else if (this.renderOnce || (this.workerAnimation))
         } else if (this.renderOnce) {
           this.renderOnce = false
-          this.gltf.getPolygons(this.staticGeometry || this.gpuSkinning)
+          this.gltf.getPolygons(this.staticGeometry || this.gpuSkinning, this.gpuSkinning)
           this.runtime.UpdateRender()
           this.updateBbox = true
         }
@@ -211,8 +214,12 @@
         this.updateBbox = false
       }
 
-      // restore element array buffer
-      this.renderer._gl.bindBuffer(this.renderer._gl.ELEMENT_ARRAY_BUFFER, this.renderer._indexBuffer)
+      // Restore the element array buffer, but only when we actually drew (our
+      // static-geometry path rebinds it) and only on WebGL (no _gl on WebGPU)
+      if (this._drewCustomBuffers && this.renderer._gl) {
+        this.renderer._gl.bindBuffer(this.renderer._gl.ELEMENT_ARRAY_BUFFER, this.renderer._indexBuffer)
+        this._drewCustomBuffers = false
+      }
     }
 
     RendersToOwnZPlane() {
@@ -244,7 +251,9 @@
       const gltfData = this.sdkType.gltfData
 
       if (gltfData.dynamicTexturesLoaded !== true) {
-        this.sdkType.LoadDynamicTextures(renderer, gltfData, textures, this.sdkType)
+        this.sdkType
+          .LoadDynamicTextures(renderer, gltfData, textures, this.sdkType)
+          .catch((err) => console.error("[3DObject] texture load failed", err))
       }
 
       if (Object.keys(textures).length === 0) {
@@ -282,6 +291,7 @@
         } finally {
           if (originalProgram) renderer.SetProgram(originalProgram)
         }
+        this._drewCustomBuffers = true
 
         if (this.updateBbox) {
           this._updateBoundingBox(x, y, z, this.gpuSkinning)

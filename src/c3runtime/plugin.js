@@ -5,8 +5,7 @@
   C3.Plugins.Mikal_3DObject = class Object3DPlugin extends C3.SDKPluginBase {
     constructor(opts) {
       super(opts)
-      console.log("opts", opts)
-      const C3 = self.C3
+          const C3 = self.C3
       const runtime = opts.runtime
       const MAX_BONES = 256
       const _DUMMY_UBO_SIZE = MAX_BONES * 16 * 4

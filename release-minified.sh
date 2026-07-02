@@ -14,6 +14,18 @@ BUILD_DIR="build"
 DIST_DIR="dist"
 OUTPUT_FILE="$DIST_DIR/3DObject-$VERSION.c3addon"
 
+# Human-readable byte sizes without GNU numfmt (absent on macOS)
+human() {
+    awk -v b="$1" 'BEGIN { split("B KB MB GB", u); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } printf "%.1f%s", b, u[i] }'
+}
+
+# Fail the build if the internal version does not match the requested one
+ADDON_VERSION=$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' src/addon.json | head -1)
+if [ "$ADDON_VERSION" != "$VERSION" ]; then
+    echo "ERROR: src/addon.json version ($ADDON_VERSION) != requested version ($VERSION)"
+    exit 1
+fi
+
 echo "🚀 Building 3DObject C3 Addon v$VERSION with minification..."
 
 # Create directories
@@ -43,7 +55,7 @@ for file in "${FILES_TO_MINIFY[@]}"; do
         BEFORE=$(stat -f%z "$BUILD_DIR/$file" 2>/dev/null || stat -c%s "$BUILD_DIR/$file" 2>/dev/null)
         TOTAL_BEFORE=$((TOTAL_BEFORE + BEFORE))
         
-        echo "  🔧 Minifying $file ($(numfmt --to=si $BEFORE)B)..."
+        echo "  🔧 Minifying $file ($(human $BEFORE))..."
         
         # Apply conservative minification using terser
         npx terser "$BUILD_DIR/$file" \
@@ -51,7 +63,7 @@ for file in "${FILES_TO_MINIFY[@]}"; do
             --mangle reserved=['DracoDecoderModule','Module','globalThis'] \
             --keep-fnames \
             --output "$BUILD_DIR/$file.min" \
-            --source-map
+           
         
         # Check if minification was successful
         if [ $? -eq 0 ] && [ -f "$BUILD_DIR/$file.min" ]; then
@@ -67,7 +79,7 @@ for file in "${FILES_TO_MINIFY[@]}"; do
             SAVED=$((BEFORE - AFTER))
             PERCENT=$((SAVED * 100 / BEFORE))
             
-            echo "    ✅ $(numfmt --to=si $BEFORE)B → $(numfmt --to=si $AFTER)B (saved $(numfmt --to=si $SAVED)B, $PERCENT%)"
+            echo "    ✅ $(human $BEFORE) → $(human $AFTER) (saved $(human $SAVED), $PERCENT%)"
         else
             echo "    ⚠️  Minification failed, keeping original file"
             rm -f "$BUILD_DIR/$file.min" "$BUILD_DIR/$file.min.map"
@@ -82,7 +94,7 @@ done
 TOTAL_SAVED=$((TOTAL_BEFORE - TOTAL_AFTER))
 if [ $TOTAL_SAVED -gt 0 ]; then
     TOTAL_PERCENT=$((TOTAL_SAVED * 100 / TOTAL_BEFORE))
-    echo "💾 Total minification savings: $(numfmt --to=si $TOTAL_SAVED)B ($TOTAL_PERCENT%)"
+    echo "💾 Total minification savings: $(human $TOTAL_SAVED) ($TOTAL_PERCENT%)"
 else
     echo "📊 No minification savings achieved"
 fi
@@ -90,7 +102,8 @@ fi
 # Create the addon zip file
 echo "📦 Creating addon archive..."
 cd "$BUILD_DIR"
-zip -r "../$OUTPUT_FILE" * -q
+rm -f "../$OUTPUT_FILE"
+zip -r "../$OUTPUT_FILE" * -x "*.DS_Store" -q
 
 # Return to original directory
 cd ..
@@ -102,7 +115,7 @@ rm -rf "$BUILD_DIR"
 # Show final results
 if [ -f "$OUTPUT_FILE" ]; then
     FINAL_SIZE=$(stat -f%z "$OUTPUT_FILE" 2>/dev/null || stat -c%s "$OUTPUT_FILE" 2>/dev/null)
-    echo "✅ Successfully created: $OUTPUT_FILE ($(numfmt --to=si $FINAL_SIZE)B)"
+    echo "✅ Successfully created: $OUTPUT_FILE ($(human $FINAL_SIZE))"
     echo "🎉 Build complete!"
 else
     echo "❌ Failed to create addon file"

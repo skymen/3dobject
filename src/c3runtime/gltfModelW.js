@@ -34,8 +34,14 @@ class GltfWorkerHostTop {
           const model = this.instances.get(e.data ? e.data.iid : undefined)
           if (model) model.onWorkerMessage(e)
         }
+        port.onmessageerror = (e) => console.error("[3DObject] worker message error", e)
         return port
-      })()
+      })().catch((err) => {
+        // Allow a later instance to retry instead of poisoning the type forever
+        console.error("[3DObject] animation worker creation failed", err)
+        this.portPromise = null
+        return null
+      })
     }
     return this.portPromise
   }
@@ -480,6 +486,7 @@ class GltfModelWTop {
       return null
     }
     this.msgPort.onmessage = (e) => this.onWorkerMessage(e)
+    this.msgPort.onmessageerror = (e) => console.error("[3DObject] worker message error", e)
     // Send the gltfModel to the worker
     const { buffLength, buffBonesLength } = this._computeBuffLengths()
     this.buff = new ArrayBuffer((buffLength + 7) * 4)
@@ -618,6 +625,7 @@ class GltfModelWTop {
   }
 
   enableNode(nodeName, enable) {
+    if (!this.msgPort) return // worker still starting up or already released
     this.msgPort.postMessage({ type: "enableNode", nodeName: nodeName, enable: enable, iid: this._iid })
   }
 

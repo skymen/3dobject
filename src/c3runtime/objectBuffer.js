@@ -201,12 +201,12 @@ class ObjectBufferTop {
   draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
     const gl = renderer._gl;
     this._ExecuteBatch(renderer); // Flushes any pending C2 draw calls
-    
+
+    if (this.vao === null) {
+      this.vao = this.createVao(renderer); // also resolves the color uniform locations
+    }
     // Set color uniforms for 3DObject compatibility
     this._setColorUniforms(gl, instanceColor);
-    if (this.vao === null) {
-      this.vao = this.createVao(renderer);
-    }
     gl.bindVertexArray(this.vao);
 
     if (instanceBoneBuffer && instanceBoneBuffer.skinAnimation) {
