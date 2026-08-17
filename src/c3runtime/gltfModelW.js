@@ -275,7 +275,28 @@ class GltfModelWTop {
     await this.createWorker(this._runtime)
     if (this.released) return
     this.workerReady = true
+    // Before the first getPolygons(), so a model that will only ever show one
+    // skin never builds, animates or draws the rest of the mesh list.
+    if (this.inst.startHidden) this.setAllNodesDisabled()
     this.getPolygons(this.inst.gpuSkinning)
+  }
+
+  /**
+   * Mark every node disabled. Same effect as the "Disable all nodes" action,
+   * but callable from init() — i.e. before the model has drawn or animated
+   * once, which the action cannot be, since it can only run from an event and
+   * the earliest of those is "On model loaded".
+   */
+  setAllNodesDisabled() {
+    const gltf = this.gltfData
+    for (const list of [gltf.skinnedNodes, gltf.nodes]) {
+      if (!list) continue
+      for (const node of list) {
+        node.disabled = true
+        this.enableNode(node.name, false)
+      }
+    }
+    this.inst.allNodesDisabled = true
   }
 
   initDrawMeshes() {
@@ -639,6 +660,57 @@ class GltfModelWTop {
     minBBox[0] = verts[l--]
   }
 
+  /**
+   * True when raw GL work can be queued into C3's batch instead of forcing a
+   * flush. See deferredBatch.js. Mirrors GltfModel — this worker-animation
+   * variant is a parallel implementation of the same render path, and skinned
+   * objects come through here rather than through GltfModel.
+   */
+  _useDeferred(renderer) {
+    const DeferredBatch = globalThis.DeferredBatch
+    return !!(
+      DeferredBatch &&
+      !this.inst.isEditor &&
+      DeferredBatch.install(renderer) &&
+      DeferredBatch.isEnabled()
+    )
+  }
+
+  /** Run a raw-GL helper, deferred into the batch when possible. */
+  _glCall(renderer, fn, mat) {
+    const DeferredBatch = globalThis.DeferredBatch
+    if (this._useDeferred(renderer)) {
+      const job = DeferredBatch.push(renderer, fn, this, renderer)
+      if (mat) job._c3obj_b = DeferredBatch.scratch(job, 0, 16, mat)
+      return
+    }
+    fn.call(this, renderer, mat)
+  }
+
+  /** Point C3's vertex/texcoord attributes back at C3's own buffers. */
+  _restoreC3Attribs(renderer) {
+    const gl = renderer._gl
+    const batchState = renderer._batchState
+    const shaderProgram = batchState.currentShader._shaderProgram
+    const locAPos = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aPos")
+    const locATex = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aTex")
+    gl.bindBuffer(gl.ARRAY_BUFFER, renderer._vertexBuffer)
+    gl.vertexAttribPointer(locAPos, 3, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(locAPos)
+    gl.bindBuffer(gl.ARRAY_BUFFER, renderer._texcoordBuffer)
+    gl.vertexAttribPointer(locATex, 2, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(locATex)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, renderer._indexBuffer)
+  }
+
+  /** All post-draw cleanup in a single deferred job. */
+  _afterDrawCleanup(renderer) {
+    this.disableVertexShaderModelRotate(renderer)
+    this._disableGPUSkinning(renderer)
+    this._resetColorUniforms(renderer)
+    if (this.inst.staticGeometry) this._restoreC3Attribs(renderer)
+  }
+
   setVertexShaderModelRotate(renderer, modelRotate) {
     const gl = renderer._gl
     const batchState = renderer._batchState
@@ -692,7 +764,7 @@ class GltfModelWTop {
 
   render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {
     if (opacity === 0) return
-    renderer.EndBatch()
+    if (!this._useDeferred(renderer)) renderer.EndBatch()
     let currentColor = [-1, -1, -1, -1]
     let currentTexture = null
     const rendererVertexData = renderer._vertexData
@@ -734,7 +806,7 @@ class GltfModelWTop {
       mat4.copy(this.modelRotate, modelRotate)
       mat4.multiply(modelRotate, tmpModelView, modelRotate)
       renderer.SetModelViewMatrix(modelRotate)
-      this.setVertexShaderModelRotate(renderer, this.modelRotate)
+      this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
     }
 
     // Default color
@@ -745,7 +817,9 @@ class GltfModelWTop {
     if (this.updateDrawVerts) {
       this.updateDrawVerts = false
     }
-    if (this.inst.staticGeometry) {
+    // Deferred, C3 still owns the batch and these pointers — flushing and
+    // zeroing them here would discard other objects' queued vertices.
+    if (this.inst.staticGeometry && !this._useDeferred(renderer)) {
       renderer.EndBatch()
       renderer._vertexPtr = 0
       renderer._texPtr = 0
@@ -879,29 +953,21 @@ class GltfModelWTop {
     renderer._texcoordData = rendererTexcoordData
 
     if (!this.inst.isEditor) {
-      renderer.EndBatch()
-      this.disableVertexShaderModelRotate(renderer)
-      this._disableGPUSkinning(renderer)
-      this._resetColorUniforms(renderer)
-    }
-    // Restore attrib
-    if (this.inst.staticGeometry) {
-      // Restore for other C3 objects
-      const gl = renderer._gl
-      const batchState = renderer._batchState
-      const shaderProgram = batchState.currentShader._shaderProgram
-      const locAPos = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aPos")
-      const locATex = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aTex")
-      gl.bindBuffer(gl.ARRAY_BUFFER, renderer._vertexBuffer)
-      gl.vertexAttribPointer(locAPos, 3, gl.FLOAT, false, 0, 0)
-      gl.enableVertexAttribArray(locAPos)
-      gl.bindBuffer(gl.ARRAY_BUFFER, renderer._texcoordBuffer)
-      gl.vertexAttribPointer(locATex, 2, gl.FLOAT, false, 0, 0)
-      gl.enableVertexAttribArray(locATex)
-      // Restore index buffer
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, renderer._indexBuffer)
-      renderer._vertexPtr = 0
-      renderer._texPtr = 0
+      if (this._useDeferred(renderer)) {
+        // One job for the uniform resets and the attribute restore.
+        this._glCall(renderer, this._afterDrawCleanup)
+      } else {
+        // Original flush-path ordering, preserved exactly.
+        renderer.EndBatch()
+        this.disableVertexShaderModelRotate(renderer)
+        this._disableGPUSkinning(renderer)
+        this._resetColorUniforms(renderer)
+        if (this.inst.staticGeometry) {
+          this._restoreC3Attribs(renderer)
+          renderer._vertexPtr = 0
+          renderer._texPtr = 0
+        }
+      }
     }
   }
 
@@ -973,7 +1039,9 @@ class GltfModelWTop {
         drawVerts.push(v)
         if (staticGeometry) {
           if (objectBuffers.length == 0) {
-            objectBuffers.push(new ObjectBufferW(this.inst.renderer, this.drawMeshes[j], 0))
+            // No gpuSkinning here, so acquire() always allocates: this path
+            // re-uploads per-instance vertex data via updateVertexData() below.
+            objectBuffers.push(ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[j], 0, false))
           } else {
             objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[j], 0)
           }
@@ -999,11 +1067,15 @@ class GltfModelWTop {
         } else {
           this.drawMeshes[this.drawMeshesIndex].material = null
         }
-        if (gpuSkinning) {
+        // Disabled meshes are skipped by render(), so allocating their GL
+        // buffers is pure waste — and it is the bulk of load cost for a model
+        // that ships many skins and shows one. This runs every prep, so a mesh
+        // enabled later allocates on the next one, before it can draw.
+        if (gpuSkinning && !node.disabled) {
           const objectBuffers = this.drawMeshes[this.drawMeshesIndex].objectBuffers
           if (objectBuffers.length === 0)
             objectBuffers.push(
-              new ObjectBufferW(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+              ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
             )
         }
       }
@@ -1094,11 +1166,12 @@ class GltfModelWTop {
         } else {
           this.drawMeshes[this.drawMeshesIndex].material = null
         }
-        if (gpuSkinning) {
+        // Same as transformNode: no GL buffers for meshes render() will skip.
+        if (gpuSkinning && !node.disabled) {
           const objectBuffers = this.drawMeshes[this.drawMeshesIndex].objectBuffers
           if (objectBuffers.length === 0)
             objectBuffers.push(
-              new ObjectBufferW(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+              ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
             )
         }
       }

@@ -104,6 +104,30 @@
           "gpu-skinning": {
             "name": "GPU skinning",
             "desc": "Skin meshes on the GPU (bone matrices computed in the animation worker). Also avoids sending vertex data to the animation worker, greatly reducing memory per instance."
+          },
+          "distance-rate": {
+            "name": "Distance animation rate",
+            "desc": "Scale the animation update rate down with distance from the camera. Multiplies the rate set by the 'Set animation rate' action rather than replacing it, so events and this can both be used."
+          },
+          "distance-rate-min-dist": {
+            "name": "Rate min distance",
+            "desc": "Distance from the camera at or below which the animation rate is left at full ('Rate max rate')."
+          },
+          "distance-rate-max-dist": {
+            "name": "Rate max distance",
+            "desc": "Distance from the camera at or beyond which the animation rate is reduced to 'Rate min rate'."
+          },
+          "distance-rate-min-rate": {
+            "name": "Rate min rate",
+            "desc": "Animation updates per second at (and beyond) the max distance."
+          },
+          "distance-rate-max-rate": {
+            "name": "Rate max rate",
+            "desc": "Animation updates per second at (and within) the min distance. Also the reference rate: the distance factor is this rate's fraction of it, so a rate set by events is left unchanged at close range."
+          },
+          "start-hidden": {
+            "name": "Start with nodes hidden",
+            "desc": "Disable every mesh node as soon as the model is parsed, before its first animation update and first draw, so 'On model loaded' can enable only the nodes you want. Avoids the one-frame spike where the whole mesh list renders and animates before events hide it."
           }
         },
         "aceCategories": {
@@ -599,6 +623,10 @@
             "description": "Get list of all node names as JSON array string.",
             "translated-name": "NodeNames",
             "params": {}
+          },
+          "effective-animation-rate": {
+            "description": "The animation update rate actually in use: the rate set by 'Set animation rate' after the distance-based factor. Equals AnimationRate when the distance feature is off or the model is within the min distance.",
+            "translated-name": "EffectiveAnimationRate"
           }
         }
       }

@@ -3,7 +3,7 @@
   const SDK = self.SDK
 
   const PLUGIN_ID = "Mikal_3DObject"
-  const PLUGIN_VERSION = "3.0.0"
+  const PLUGIN_VERSION = "3.0.11"
   const PLUGIN_CATEGORY = "3d"
 
   const PLUGIN_CLASS = (SDK.Plugins.Mikal_3DObject = class Object3DPlugin extends SDK.IPluginBase {
@@ -116,6 +116,24 @@
         new SDK.PluginProperty("check", "gpu-skinning", false, {
           interpolatable: false,
         }),
+        new SDK.PluginProperty("check", "distance-rate", false, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("float", "distance-rate-min-dist", 1024, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("float", "distance-rate-max-dist", 8192, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("float", "distance-rate-min-rate", 5, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("float", "distance-rate-max-rate", 60, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("check", "start-hidden", false, {
+          interpolatable: false,
+        }),
       ])
 
       this._info.AddFileDependency({
@@ -124,6 +142,10 @@
       })
       this._info.AddFileDependency({
         filename: "c3runtime/gltfData.js",
+        type: "external-runtime-script",
+      })
+      this._info.AddFileDependency({
+        filename: "c3runtime/deferredBatch.js",
         type: "external-runtime-script",
       })
       this._info.AddFileDependency({

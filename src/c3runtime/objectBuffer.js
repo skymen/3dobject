@@ -8,6 +8,11 @@ class ObjectBufferTop {
     const gl = this.gl
     this.vao = null
     this.nodeXform = new Float32Array(16)
+    // Set by acquire() when this buffer is shared between instances. Unshared
+    // buffers keep refs === 1 and free their GL objects on the first release().
+    this._shared = false
+    this._refs = 1
+    this._shareKey = null
     this.maxJointIndexUsed = mesh.maxJointIndexUsed ?? -1; // Store max index used by this mesh primitive
     this.gpuSkinning = gpuSkinning
 
@@ -88,6 +93,105 @@ class ObjectBufferTop {
     // Color uniform locations for 3DObject compatibility
     this.locUseUniformColor = null;
     this.locObjectColor = null;
+  }
+
+  /**
+   * Get a buffer for `mesh.primitives[primitiveIndex]`, sharing the GL objects
+   * between instances of the same model where that is provably safe.
+   *
+   * ── WHY ───────────────────────────────────────────────────────────────────
+   * Every ObjectBuffer allocates seven GL buffers (vertex, texcoord, index,
+   * colour, normal, weights, joints). One per primitive *per instance* is what
+   * puts a crowd of characters into an out-of-memory crash — 150 skinned models
+   * of a few primitives each is over a thousand buffers holding a thousand
+   * copies of identical bytes.
+   *
+   * ── WHEN IT IS SAFE ───────────────────────────────────────────────────────
+   * Only when the vertex data itself is shared, and nothing per-instance lives
+   * on the buffer.
+   *
+   * 1. **The data must be shared.** With GPU skinning the buffer is filled from
+   *    `mesh.drawVertsOrig`, which `sharedOrCopy()` in gltfModel hands out as the
+   *    *same* Float32Array for every instance (the parsed glTF lives on the
+   *    sdkType). Bones deform it in the vertex shader, so it is never rewritten
+   *    — note that `updateVertexData()` is only ever called on the `!gpuSkinning`
+   *    path. With CPU skinning the buffer is filled from `mesh.drawVerts`, which
+   *    is a per-instance array that gets re-uploaded every frame.
+   *
+   *    Keying the cache on the identity of the vertex array makes this
+   *    self-enforcing rather than assumed: a per-instance array is a distinct
+   *    key, so it simply gets its own buffer.
+   *
+   * 2. **`this.nodeXform` must be unused.** It is the one genuinely per-instance
+   *    field, and sharing would let one instance clobber another's — invisibly,
+   *    since draws are deferred to flush time, so *every* sharer would end up
+   *    using whichever value was written last. `_drawNow` only reads it on the
+   *    non-skinning path, so sharing is restricted to primitives that actually
+   *    carry JOINTS/WEIGHTS. `setNodeXform` is a no-op on a shared buffer, and
+   *    `uploadNodeXformUniforms` warns if one ever reaches it anyway.
+   *
+   * Anything not meeting both conditions falls through to a plain per-instance
+   * buffer, i.e. exactly the previous behaviour.
+   *
+   * Per-instance state that is *not* on the buffer and so needs nothing here:
+   * bone matrices (per-instance BoneBuffer UBO), instance tint (an argument to
+   * `draw()`), and mesh visibility (`drawMeshes[j].disabled`, checked by the
+   * caller). Different instances can therefore share geometry while still
+   * playing different animations, wearing different skins and showing different
+   * sub-meshes.
+   */
+  static acquire(renderer, mesh, primitiveIndex, gpuSkinning) {
+    if (!ObjectBufferTop.isSharingEnabled() || !ObjectBufferTop._isShareable(mesh, primitiveIndex, gpuSkinning)) {
+      ObjectBufferTop.stats.unshared++
+      return new ObjectBufferTop(renderer, mesh, primitiveIndex, gpuSkinning)
+    }
+
+    const vertexData = mesh.drawVertsOrig[primitiveIndex]
+    const indexData = mesh.drawIndices[primitiveIndex]
+
+    // Outer key is weak so a model unloading drops its whole cache line with it.
+    // Inner key distinguishes primitives that happen to share a POSITION accessor.
+    let byIndexData = ObjectBufferTop._cache.get(vertexData)
+    if (!byIndexData) {
+      byIndexData = new Map()
+      ObjectBufferTop._cache.set(vertexData, byIndexData)
+    }
+
+    let buffer = byIndexData.get(indexData)
+    if (buffer) {
+      buffer._refs++
+      ObjectBufferTop.stats.reused++
+      return buffer
+    }
+
+    buffer = new ObjectBufferTop(renderer, mesh, primitiveIndex, gpuSkinning)
+    buffer._shared = true
+    buffer._refs = 1
+    buffer._shareKey = { vertexData, indexData }
+    byIndexData.set(indexData, buffer)
+    ObjectBufferTop.stats.created++
+    return buffer
+  }
+
+  /** Runtime kill-switch, for A/B testing against per-instance allocation. */
+  static isSharingEnabled() {
+    return globalThis.C3_3DOBJECT_SHARE_BUFFERS !== false
+  }
+
+  static _isShareable(mesh, primitiveIndex, gpuSkinning) {
+    if (!gpuSkinning) return false
+    // Both conditions from acquire()'s doc comment: shared source data, and a
+    // skinned primitive (so `nodeXform` is never read at draw time).
+    return !!(
+      mesh.drawVertsOrig &&
+      mesh.drawVertsOrig[primitiveIndex] &&
+      mesh.drawIndices &&
+      mesh.drawIndices[primitiveIndex] &&
+      mesh.drawWeights &&
+      mesh.drawWeights[primitiveIndex] &&
+      mesh.drawJoints &&
+      mesh.drawJoints[primitiveIndex]
+    )
   }
 
   _ExecuteBatch(renderer) {
@@ -189,6 +293,17 @@ class ObjectBufferTop {
   }
 
   uploadNodeXformUniforms(renderer) {
+    // Reaching here on a shared buffer means acquire()'s second precondition is
+    // wrong for this model, and every sharer is about to draw with a stale
+    // transform. Say so rather than shipping a subtle misplacement.
+    if (this._shared && !ObjectBufferTop._warnedSharedNodeXform) {
+      ObjectBufferTop._warnedSharedNodeXform = true
+      console.warn(
+        "3DObject: a shared ObjectBuffer reached uploadNodeXformUniforms; " +
+          "its nodeXform is not per-instance. Set globalThis.C3_3DOBJECT_SHARE_BUFFERS = false to fall back."
+      )
+    }
+
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
     const locUNodeXform = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXform")
@@ -198,9 +313,46 @@ class ObjectBufferTop {
     gl.uniform1f(locUNodeXformEnable, 1.0)
   }
 
+  /**
+   * Draw this primitive.
+   *
+   * Prefers queueing the GL work into C3's batch command list (see
+   * deferredBatch.js) so the batch never has to be flushed. Flushing here is
+   * the fallback for WebGPU or when the deferral is switched off, and it is
+   * expensive: it costs four bufferSubData uploads plus a command-list walk,
+   * per primitive, per instance, and it truncates every other object's batch
+   * as a side effect.
+   */
   draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
+    const DeferredBatch = globalThis.DeferredBatch
+
+    if (DeferredBatch && DeferredBatch.install(renderer) && DeferredBatch.isEnabled()) {
+      const job = DeferredBatch.push(
+        renderer,
+        ObjectBufferTop.prototype._drawNow,
+        this,
+        renderer,
+        instanceBoneBuffer,
+        modelGltfData
+      )
+      // instanceColor is a scratch array the caller rewrites per mesh, so it
+      // has to be copied rather than referenced.
+      job._c3obj_d = instanceColor ? DeferredBatch.scratch(job, 1, 4, instanceColor) : null
+      return
+    }
+
+    this._ExecuteBatch(renderer) // Flushes any pending C3 draw calls
+    this._drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor)
+  }
+
+  /**
+   * The actual GL work. Runs at flush time when deferred, which is also when
+   * `renderer._batchState.currentShader` is accurate — `DoSetProgram` sets it
+   * as the command list executes, so reading it here is correct where reading
+   * it at record time would not be.
+   */
+  _drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
     const gl = renderer._gl;
-    this._ExecuteBatch(renderer); // Flushes any pending C2 draw calls
 
     if (this.vao === null) {
       this.vao = this.createVao(renderer); // also resolves the color uniform locations
@@ -322,6 +474,10 @@ class ObjectBufferTop {
   }
 
   setNodeXform(nodeXform) {
+    // A shared buffer has no single owner to hold this for, and nothing reads it
+    // on the skinned path it is restricted to. Dropping the write keeps one
+    // instance from silently overwriting another's — see acquire().
+    if (this._shared) return
     this.nodeXform = nodeXform
   }
 
@@ -335,6 +491,15 @@ class ObjectBufferTop {
   }
 
   release() {
+    // Shared buffers outlive the instance that happened to release first.
+    if (--this._refs > 0) return
+    if (this._shareKey) {
+      const byIndexData = ObjectBufferTop._cache.get(this._shareKey.vertexData)
+      if (byIndexData) byIndexData.delete(this._shareKey.indexData)
+      this._shareKey = null
+      this._shared = false
+    }
+
     const gl = this.gl
     if (this.vertexBuffer) {
       gl.deleteBuffer(this.vertexBuffer)
@@ -385,6 +550,28 @@ class ObjectBufferTop {
     this.nodeXform = null
     this.vao = null
   }
+}
+
+/** vertex data array → (index data array → shared ObjectBuffer). See acquire(). */
+ObjectBufferTop._cache = new WeakMap()
+ObjectBufferTop._warnedSharedNodeXform = false
+
+/**
+ * How buffer sharing is doing.
+ *
+ *   ObjectBuffer.stats   // { created, reused, unshared }
+ *
+ * `created` is the number of distinct shared primitives, `reused` the number of
+ * allocations avoided, `unshared` the primitives that fell back to a buffer of
+ * their own (all CPU-skinned and all non-skinned ones). With a crowd of one
+ * character model, `reused` should be roughly instances × primitives and
+ * `created` should stay in the single digits.
+ */
+ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0 }
+ObjectBufferTop.resetStats = function () {
+  ObjectBufferTop.stats.created = 0
+  ObjectBufferTop.stats.reused = 0
+  ObjectBufferTop.stats.unshared = 0
 }
 
 // @ts-ignore

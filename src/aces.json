@@ -649,6 +649,14 @@
         "returnType": "number",
         "highlight": false,
         "params": []
+      },
+      {
+        "id": "effective-animation-rate",
+        "scriptName": "EffectiveAnimationRate",
+        "expressionName": "EffectiveAnimationRate",
+        "returnType": "number",
+        "highlight": false,
+        "params": []
       }
     ]
   }

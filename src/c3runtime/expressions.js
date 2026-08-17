@@ -142,6 +142,9 @@
     AnimationSpeed(speed) {
       return this.animationSpeed
     },
+    EffectiveAnimationRate() {
+      return this.effectiveAnimationRate
+    },
     TotalTriangles() {
       return this.totalTriangles
     },

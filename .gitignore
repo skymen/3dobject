@@ -116,3 +116,7 @@ Thumbs.db
 
 # Windows files
 *.lnk
+
+.khabot
+.khabot-desktop
+.khabot-studio

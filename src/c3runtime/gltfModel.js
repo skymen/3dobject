@@ -47,8 +47,29 @@ class GltfModelTop {
       if (!node.mesh) continue
       this.nodeMeshMap[node.name] = node.mesh.name
     }
+    // Before the first getPolygons(), so a model that will only ever show one
+    // skin never builds, animates or draws the rest of the mesh list.
+    if (this.inst.startHidden) this.setAllNodesDisabled()
     this.getPolygons(this.inst.staticGeometry, this.inst.gpuSkinning)
     if (!this.inst.isEditor) this.inst.initBoundingBox()
+  }
+
+  /**
+   * Mark every node disabled. Same effect as the "Disable all nodes" action,
+   * but callable from init() — i.e. before the model has drawn or animated
+   * once, which the action cannot be, since it can only run from an event and
+   * the earliest of those is "On model loaded".
+   *
+   * No enableNode() call here: that is the worker handshake, and this class is
+   * the non-worker path.
+   */
+  setAllNodesDisabled() {
+    const gltf = this.gltfData
+    for (const list of [gltf.skinnedNodes, gltf.nodes]) {
+      if (!list) continue
+      for (const node of list) node.disabled = true
+    }
+    this.inst.allNodesDisabled = true
   }
 
   release() {
@@ -96,6 +117,44 @@ class GltfModelTop {
     return structuredClone(sourceGltf)
   }
 
+  /**
+   * True when raw GL work can be queued into C3's batch instead of forcing a
+   * flush. See deferredBatch.js — this is what lets a whole frame's models
+   * share one batch rather than costing two flushes each.
+   */
+  _useDeferred(renderer) {
+    const DeferredBatch = globalThis.DeferredBatch
+    return !!(
+      DeferredBatch &&
+      !this.inst.isEditor &&
+      DeferredBatch.install(renderer) &&
+      DeferredBatch.isEnabled()
+    )
+  }
+
+  /**
+   * Run one of the raw-GL helpers below, deferred into the batch when possible
+   * and immediately otherwise.
+   *
+   * These helpers all read `renderer._batchState.currentShader`, which is only
+   * accurate while the command list is executing, so running them deferred is
+   * more correct than running them at record time — provided the batch has an
+   * appropriate SetProgram queued ahead of them, which instance.js guarantees.
+   *
+   * @param {Float32Array|null} [mat] snapshotted if given; the caller's matrix
+   *   is reused between instances and would otherwise be overwritten before the
+   *   job runs.
+   */
+  _glCall(renderer, fn, mat) {
+    const DeferredBatch = globalThis.DeferredBatch
+    if (this._useDeferred(renderer)) {
+      const job = DeferredBatch.push(renderer, fn, this, renderer)
+      if (mat) job._c3obj_b = DeferredBatch.scratch(job, 0, 16, mat)
+      return
+    }
+    fn.call(this, renderer, mat)
+  }
+
   setVertexShaderModelRotate(renderer, modelRotate) {
     const gl = renderer._gl
     const batchState = renderer._batchState
@@ -133,6 +192,28 @@ class GltfModelTop {
     gl.uniform1f(this.locUNodeXformEnable, 0.0)
   }
 
+  /**
+   * Point C3's vertex/texcoord attributes back at C3's own buffers.
+   *
+   * ObjectBuffer.draw binds its VAO to issue the model's drawElements, which
+   * leaves the default VAO's attribute pointers stale. C3's subsequent draws
+   * read through those pointers, so they have to be put back.
+   */
+  _restoreC3Attribs(renderer) {
+    const gl = renderer._gl
+    const batchState = renderer._batchState
+    const shaderProgram = batchState.currentShader._shaderProgram
+    const locAPos = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aPos")
+    const locATex = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aTex")
+    gl.bindBuffer(gl.ARRAY_BUFFER, renderer._vertexBuffer)
+    gl.vertexAttribPointer(locAPos, 3, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(locAPos)
+    gl.bindBuffer(gl.ARRAY_BUFFER, renderer._texcoordBuffer)
+    gl.vertexAttribPointer(locATex, 2, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(locATex)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, renderer._indexBuffer)
+  }
+
   _resetColorUniforms(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
@@ -149,7 +230,10 @@ class GltfModelTop {
 
   render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {
     if (opacity === 0) return
-    if (!this.inst.isEditor) renderer.EndBatch()
+    // Only flush when we can't queue our GL work into the batch instead. The
+    // flush is what used to cost ~14 us per instance and truncate every other
+    // object's batching as a side effect.
+    if (!this.inst.isEditor && !this._useDeferred(renderer)) renderer.EndBatch()
 
     let totalTriangles = 0
     let currentColor = [-1, -1, -1, -1]
@@ -192,7 +276,7 @@ class GltfModelTop {
       mat4.copy(this.modelRotate, modelRotate)
       mat4.multiply(modelRotate, tmpModelView, modelRotate)
       renderer.SetModelViewMatrix(modelRotate)
-      this.setVertexShaderModelRotate(renderer, this.modelRotate)
+      this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
     }
 
     // Default color - no longer set via renderer, will be passed via uniforms
@@ -254,7 +338,7 @@ class GltfModelTop {
         let instanceBoneBuffer
         for (let i = 0; i < objectBuffers.length; i++) {
           instanceBoneBuffer = this.drawMeshes[j]?.boneBuffer
-          this.setVertexShaderModelRotate(renderer, this.modelRotate)
+          this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
 
           objectBuffers[i].draw(
             renderer,
@@ -331,35 +415,53 @@ class GltfModelTop {
     renderer._texcoordData = rendererTexcoordData
 
     if (!this.inst.isEditor) {
-      this.disableVertexShaderModelRotate(renderer)
-      this._disableGPUSkinning(renderer)
-      this._resetColorUniforms(renderer)
-      renderer.EndBatch()
+      if (this._useDeferred(renderer)) {
+        // One job for all of it. Every queued job costs a switch and a call at
+        // flush time, and with hundreds of models on screen the per-instance
+        // job count is worth keeping down.
+        this._glCall(renderer, this._afterDrawCleanup)
+      } else {
+        // Original flush-path ordering, preserved exactly.
+        this.disableVertexShaderModelRotate(renderer)
+        this._disableGPUSkinning(renderer)
+        this._resetColorUniforms(renderer)
+        renderer.EndBatch()
+        if (this.inst.staticGeometry) {
+          this._restoreC3Attribs(renderer)
+          // Safe here only because EndBatch just emptied the batch. Deferred,
+          // C3 still owns these pointers and zeroing them would throw away
+          // other objects' queued vertices.
+          renderer._vertexPtr = 0
+          renderer._texPtr = 0
+        }
+        // @ts-ignore
+        if (globalThis.BoneBuffer) this._bindDummyBonesUbo(renderer)
+      }
     }
 
-    // Restore attrib
-    if (this.inst.staticGeometry) {
-      const gl = renderer._gl
-      const batchState = renderer._batchState
-      const shaderProgram = batchState.currentShader._shaderProgram
-      const locAPos = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aPos")
-      const locATex = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aTex")
-      gl.bindBuffer(gl.ARRAY_BUFFER, renderer._vertexBuffer)
-      gl.vertexAttribPointer(locAPos, 3, gl.FLOAT, false, 0, 0)
-      gl.enableVertexAttribArray(locAPos)
-      gl.bindBuffer(gl.ARRAY_BUFFER, renderer._texcoordBuffer)
-      gl.vertexAttribPointer(locATex, 2, gl.FLOAT, false, 0, 0)
-      gl.enableVertexAttribArray(locATex)
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, renderer._indexBuffer)
-      renderer._vertexPtr = 0
-      renderer._texPtr = 0
-    }
+  }
 
-    // --- Final Dummy UBO Bind (Cleanup) ---
-    // After rendering all meshes, bind the dummy UBO in case subsequent C3 rendering
-    // uses a shader that expects the 'Bones' block.
+  /**
+   * Everything that has to happen after a model's meshes are drawn, in one
+   * deferred job: reset the uniforms we changed, point C3's attributes back at
+   * its own buffers, and bind the dummy Bones UBO so a following C3 draw whose
+   * shader declares that block doesn't read ours.
+   */
+  _afterDrawCleanup(renderer) {
+    this.disableVertexShaderModelRotate(renderer)
+    this._disableGPUSkinning(renderer)
+    this._resetColorUniforms(renderer)
+    if (this.inst.staticGeometry) this._restoreC3Attribs(renderer)
     // @ts-ignore
-    if (!this.inst.isEditor && globalThis.BoneBuffer) {
+    if (globalThis.BoneBuffer) this._bindDummyBonesUbo(renderer)
+  }
+
+  /**
+   * Bind a dummy UBO to the Bones binding point so a following C3 draw whose
+   * shader declares the block doesn't read whatever this model left there.
+   */
+  _bindDummyBonesUbo(renderer) {
+    {
       const gl = renderer._gl
       const currentShader = renderer._batchState?.currentShader?._shaderProgram
       if (currentShader) {
@@ -390,7 +492,6 @@ class GltfModelTop {
         console.warn("[GltfModel Cleanup] Could not get current shader program to perform dummy UBO cleanup bind.")
       }
     }
-    // --- End Final Dummy UBO Bind ---
   }
 
   /*
@@ -556,7 +657,7 @@ class GltfModelTop {
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(
-                  new ObjectBuffer(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+                  ObjectBuffer.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
                 )
               } else if (!gpuSkinning) {
                 objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0)
@@ -831,7 +932,7 @@ class GltfModelTop {
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(
-                  new ObjectBuffer(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+                  ObjectBuffer.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
                 )
               } else if (!gpuSkinning) {
                 objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0)

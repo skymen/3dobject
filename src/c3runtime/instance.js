@@ -2,6 +2,9 @@
 {
   const C3 = self.C3
 
+  /** Layer → per-tick camera position. See Instance._GetCameraPosition(). */
+  const camPosCache = new WeakMap()
+
   C3.Plugins.Mikal_3DObject.Instance = class Object3DInstance extends C3.SDKWorldInstanceBase {
     constructor(inst, properties) {
       super(inst)
@@ -16,6 +19,9 @@
       this.animationSpeed = 1
       this.animationLastTime = 0
       this.animationRate = 60
+      // animationRate after the distance factor; readable via the
+      // EffectiveAnimationRate expression for tuning the thresholds.
+      this.effectiveAnimationRate = 60
       this.animationLoop = true
       this.animationPlay = true
       this.animationFinished = false
@@ -37,8 +43,17 @@
       this.totalTriangles = 0
       this.staticGeometry = false
       this.gpuSkinning = false
+      // Distance-based animation rate. See _GetDistanceRateFactor().
+      this.distanceRate = false
+      this.distanceRateMinDist = 1024
+      this.distanceRateMaxDist = 8192
+      this.distanceRateMinRate = 5
+      this.distanceRateMaxRate = 60
       this.animationOffset = 0
       this.allNodesDisabled = false
+      // Hide every node as soon as the model is parsed, so "On model loaded"
+      // can enable just the ones wanted. See GltfModel(W).setAllNodesDisabled().
+      this.startHidden = false
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
       this._released = false
       this._drewCustomBuffers = false
@@ -77,6 +92,12 @@
           this.gpuSkinning = true
           this.staticGeometry = true
         }
+        this.distanceRate = properties[19] === true
+        this.distanceRateMinDist = properties[20]
+        this.distanceRateMaxDist = properties[21]
+        this.distanceRateMinRate = properties[22]
+        this.distanceRateMaxRate = properties[23]
+        this.startHidden = properties[24] === true
       }
 
       this.localCenter = [0, 0, 0]
@@ -142,6 +163,72 @@
         )
     }
 
+    /**
+     * The layer's 3D camera position, cached for the current tick.
+     *
+     * `Layer.GetCameraPosition()` returns a freshly allocated array on every
+     * call, so asking per instance would mean one throwaway array per model per
+     * frame — exactly the crowds this feature exists to speed up. The cache is
+     * keyed weakly on the layer because C3 seals Layer in debug builds, so a
+     * property can't be parked on it.
+     */
+    _GetCameraPosition() {
+      const layer = this.GetWorldInfo().GetLayer()
+      const tick = this._runtime.GetTickCount()
+      let entry = camPosCache.get(layer)
+      if (!entry) {
+        entry = { tick: -1, pos: [0, 0, 0] }
+        camPosCache.set(layer, entry)
+      }
+      if (entry.tick !== tick) {
+        entry.tick = tick
+        const p = layer.GetCameraPosition()
+        entry.pos[0] = p[0]
+        entry.pos[1] = p[1]
+        entry.pos[2] = p[2]
+      }
+      return entry.pos
+    }
+
+    /**
+     * Multiplier applied to `animationRate` based on distance from the camera.
+     *
+     * Returns a *factor*, not a rate, so this composes with the "Set animation
+     * rate" action instead of fighting it: events keep authority over the base
+     * rate (idle vs. active, quality settings, whatever) and this scales it for
+     * distance. The factor is the distance-interpolated rate as a fraction of
+     * "Rate max rate", so it is exactly 1 within "Rate min distance" — a model
+     * up close animates at whatever the events asked for, untouched.
+     *
+     * Interpolation is linear in distance between the two thresholds and
+     * clamped outside them.
+     */
+    _GetDistanceRateFactor() {
+      if (!this.distanceRate) return 1
+
+      const maxRate = this.distanceRateMaxRate
+      const minRate = this.distanceRateMinRate
+      if (!(maxRate > 0) || !(minRate > 0)) return 1
+
+      const minDist = this.distanceRateMinDist
+      const maxDist = this.distanceRateMaxDist
+
+      const cam = this._GetCameraPosition()
+      const wi = this.GetWorldInfo()
+      const dx = wi.GetX() - cam[0]
+      const dy = wi.GetY() - cam[1]
+      const dz = wi.GetTotalZElevation() - cam[2]
+      const distSq = dx * dx + dy * dy + dz * dz
+
+      // Squared compare first: most instances in a crowd are at one extreme or
+      // the other, so the sqrt below is usually skipped.
+      if (distSq <= minDist * minDist) return 1
+      if (distSq >= maxDist * maxDist || maxDist <= minDist) return minRate / maxRate
+
+      const t = (Math.sqrt(distSq) - minDist) / (maxDist - minDist)
+      return (maxRate + (minRate - maxRate) * t) / maxRate
+    }
+
     Tick() {
       const onScreen = this.IsOnScreen()
 
@@ -174,11 +261,15 @@
       // Animate gltf model
       if (this.loaded) {
         if (this.animationPlay && this.gltf.gltfData.hasOwnProperty("animations")) {
+          // The action-set rate scaled for distance; identical to animationRate
+          // when the distance feature is off or the model is close to the camera.
+          const rate = Math.max(this.animationRate * this._GetDistanceRateFactor(), 0.001)
+          this.effectiveAnimationRate = rate
           this.animationTime +=
             this._runtime.GetDt() * this.animationSpeed +
-            (Math.random() * (1 / this.animationRate) - 1 / this.animationRate / 2) * 0.1
+            (Math.random() * (1 / rate) - 1 / rate / 2) * 0.1
           const deltaTime = this.animationTime - this.animationLastTime
-          if (deltaTime >= 1 / this.animationRate) {
+          if (deltaTime >= 1 / rate) {
             this.animationLastTime = this.animationTime
             this.gltf.updateAnimationPolygons(
               this.animationIndex,
@@ -276,6 +367,18 @@
           return
         }
         const originalProgram = renderer.GetProgram()
+        // Force a SetProgram batch job even when the 3D shader is already the
+        // last-set program.
+        //
+        // SetProgram is equality-guarded (`if (this._lastProgram === t) return`),
+        // so a second instance in a row would push no job at all. That was fine
+        // when this path flushed immediately — the program was already bound and
+        // its uniforms current. Deferred, it is not: DoSetProgram is what
+        // uploads the matP/matMV that DoSetProjection/DoSetModelView marked
+        // stale, so with no job queued the deferred draw executes against the
+        // PREVIOUS frame's matrices. Invisible with a static camera, and it
+        // makes models vanish while the camera moves.
+        if (globalThis.DeferredBatch?.isEnabled?.()) renderer.ResetLastProgram()
         renderer.SetProgram(globalThis.cached3DObjectShader)
         try {
           this.gltf.render(
@@ -771,6 +874,7 @@
       this.animationSpeed = null
       this.animationLastTime = null
       this.animationRate = null
+      this.effectiveAnimationRate = null
       this.animationLoop = null
       this.animationPlay = null
       this.animationFinished = null
