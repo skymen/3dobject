@@ -32,6 +32,9 @@ class ObjectBufferTop {
     normalData = mesh.drawNormals ? mesh.drawNormals[primitiveIndex] : null
     weightsData = mesh.drawWeights ? mesh.drawWeights[primitiveIndex] : null
     jointsData = mesh.drawJoints ? mesh.drawJoints[primitiveIndex] : null
+    // Morph deltas are shared model data; weights arrive per instance at draw time.
+    this.morphTargets = mesh.morphTargets ? mesh.morphTargets[primitiveIndex] : null
+    this.morphVertexCount = vertexData ? vertexData.length / 3 : 0
     this.indexDataLength = indexData.length
     this.vertexData = vertexData
     this.texcoordData = texcoordData
@@ -209,6 +212,7 @@ class ObjectBufferTop {
   }
 
   createVao(renderer) {
+    ObjectBufferTop.stats.vaos++
     const gl = renderer._gl
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
@@ -323,7 +327,7 @@ class ObjectBufferTop {
    * per primitive, per instance, and it truncates every other object's batch
    * as a side effect.
    */
-  draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
+  draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null) {
     const DeferredBatch = globalThis.DeferredBatch
 
     if (DeferredBatch && DeferredBatch.install(renderer) && DeferredBatch.isEnabled()) {
@@ -336,13 +340,18 @@ class ObjectBufferTop {
         modelGltfData
       )
       // instanceColor is a scratch array the caller rewrites per mesh, so it
-      // has to be copied rather than referenced.
+      // has to be copied rather than referenced. Same for the morph weights,
+      // which the animation update rewrites in place every frame.
       job._c3obj_d = instanceColor ? DeferredBatch.scratch(job, 1, 4, instanceColor) : null
+      job._c3obj_e =
+        morphWeights && morphWeights.length
+          ? DeferredBatch.scratch(job, 2, morphWeights.length, morphWeights)
+          : null
       return
     }
 
     this._ExecuteBatch(renderer) // Flushes any pending C3 draw calls
-    this._drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor)
+    this._drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor, morphWeights)
   }
 
   /**
@@ -351,7 +360,7 @@ class ObjectBufferTop {
    * as the command list executes, so reading it here is correct where reading
    * it at record time would not be.
    */
-  _drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null) {
+  _drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null) {
     const gl = renderer._gl;
 
     if (this.vao === null) {
@@ -359,6 +368,7 @@ class ObjectBufferTop {
     }
     // Set color uniforms for 3DObject compatibility
     this._setColorUniforms(gl, instanceColor);
+    this._uploadMorphUniforms(renderer, morphWeights);
     gl.bindVertexArray(this.vao);
 
     if (instanceBoneBuffer && instanceBoneBuffer.skinAnimation) {
@@ -419,7 +429,16 @@ class ObjectBufferTop {
     }
 
     // --- Draw Call (Common for all paths) ---
+    ObjectBufferTop.stats.drawn++;
+    if (globalThis.cached3DObjectShader && renderer._batchState.currentShader !== globalThis.cached3DObjectShader) {
+      ObjectBufferTop.stats.wrongProg++;
+    }
     gl.drawElements(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0);
+    // getError is a full pipeline stall, so it stays behind a flag.
+    if (globalThis.C3_3DOBJECT_GLCHECK) {
+      const err = gl.getError();
+      if (err) ObjectBufferTop.stats.glErr = err;
+    }
 
     // Unbind VAO once after all drawing paths
     gl.bindVertexArray(null);
@@ -471,6 +490,109 @@ class ObjectBufferTop {
       texcoordData[i] = 0.5
     }
     return texcoordData
+  }
+
+  /**
+   * Build (once per model) the float texture holding this primitive's morph
+   * target deltas, and cache it on the targets array itself so every instance
+   * of the model shares one upload.
+   *
+   * Deltas are model data; only the weights are per-instance, so morphing on
+   * the GPU stays compatible with buffer sharing in a way CPU morphing never
+   * could - CPU morphs bake into per-instance vertices by definition.
+   *
+   * Layout matches applyMorph() in the vertex shader: two texels per vertex per
+   * target, position delta then normal delta, index = (t*count + v)*2 + channel.
+   */
+  static _getMorphTexture(gl, targets, vertexCount) {
+    let entry = ObjectBufferTop._morphCache.get(targets)
+    if (entry) return entry
+
+    const texelCount = targets.length * vertexCount * 2
+    const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    const width = Math.min(texelCount, maxSize)
+    const height = Math.ceil(texelCount / width)
+    if (height > maxSize) {
+      console.warn("[3DObject] morph targets exceed max texture size; morphing disabled for this mesh")
+      entry = { texture: null, width: 0, vertexCount: 0, count: 0 }
+      ObjectBufferTop._morphCache.set(targets, entry)
+      return entry
+    }
+
+    const data = new Float32Array(width * height * 4)
+    for (let t = 0; t < targets.length; t++) {
+      const pos = targets[t].POSITION ? targets[t].POSITION.data : null
+      const nrm = targets[t].NORMAL ? targets[t].NORMAL.data : null
+      for (let v = 0; v < vertexCount; v++) {
+        const base = ((t * vertexCount + v) * 2) * 4
+        if (pos) {
+          data[base] = pos[v * 3]
+          data[base + 1] = pos[v * 3 + 1]
+          data[base + 2] = pos[v * 3 + 2]
+        }
+        if (nrm) {
+          data[base + 4] = nrm[v * 3]
+          data[base + 5] = nrm[v * 3 + 1]
+          data[base + 6] = nrm[v * 3 + 2]
+        }
+      }
+    }
+
+    const texture = gl.createTexture()
+    gl.activeTexture(gl.TEXTURE0 + ObjectBufferTop.MORPH_TEXTURE_UNIT)
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    // texelFetch only, so no filtering or mips are needed or wanted.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, data)
+    gl.activeTexture(gl.TEXTURE0)
+
+    entry = { texture, width, vertexCount, count: targets.length }
+    ObjectBufferTop._morphCache.set(targets, entry)
+    return entry
+  }
+
+  /** Upload this instance's morph weights, or switch morphing off. */
+  _uploadMorphUniforms(renderer, morphWeights) {
+    const gl = renderer._gl
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram
+    const locCount = globalThis.uniformCache.getLocation(gl, shaderProgram, "uMorphCount")
+    if (!locCount) return
+
+    const targets = this.morphTargets
+    if (!targets || !targets.length || !morphWeights || !morphWeights.length) {
+      gl.uniform1i(locCount, 0)
+      return
+    }
+
+    const morph = ObjectBufferTop._getMorphTexture(gl, targets, this.morphVertexCount)
+    if (!morph.texture) {
+      gl.uniform1i(locCount, 0)
+      return
+    }
+
+    const count = Math.min(morph.count, morphWeights.length, ObjectBufferTop.MAX_MORPH)
+    gl.uniform1i(locCount, count)
+    gl.uniform1i(globalThis.uniformCache.getLocation(gl, shaderProgram, "uMorphTexWidth"), morph.width)
+    gl.uniform1i(globalThis.uniformCache.getLocation(gl, shaderProgram, "uMorphVertexCount"), morph.vertexCount)
+
+    if (!this._morphWeightScratch || this._morphWeightScratch.length !== ObjectBufferTop.MAX_MORPH) {
+      this._morphWeightScratch = new Float32Array(ObjectBufferTop.MAX_MORPH)
+    }
+    const w = this._morphWeightScratch
+    w.fill(0)
+    for (let i = 0; i < count; i++) w[i] = morphWeights[i]
+    gl.uniform1fv(globalThis.uniformCache.getLocation(gl, shaderProgram, "uMorphWeights"), w)
+
+    gl.activeTexture(gl.TEXTURE0 + ObjectBufferTop.MORPH_TEXTURE_UNIT)
+    gl.bindTexture(gl.TEXTURE_2D, morph.texture)
+    gl.uniform1i(
+      globalThis.uniformCache.getLocation(gl, shaderProgram, "uMorphTex"),
+      ObjectBufferTop.MORPH_TEXTURE_UNIT
+    )
+    gl.activeTexture(gl.TEXTURE0)
   }
 
   setNodeXform(nodeXform) {
@@ -567,7 +689,28 @@ ObjectBufferTop._warnedSharedNodeXform = false
  * character model, `reused` should be roughly instances × primitives and
  * `created` should stay in the single digits.
  */
-ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0 }
+// C3 uses texture units 0 and 1, so sit clear of both.
+ObjectBufferTop.MORPH_TEXTURE_UNIT = 4
+// Must match MAX_MORPH in the vertex shader (plugin.js).
+ObjectBufferTop.MAX_MORPH = 32
+ObjectBufferTop._morphCache = new WeakMap()
+
+ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0, vaos: 0, renders: 0, submitted: 0, skipDisabled: 0, skipNoTexture: 0, drawn: 0, wrongProg: 0, glErr: 0, quads: 0, meshLoops: 0, emptyVerts: 0, flushes: 0 }
+// DEBUG (temporary, not for release): per-frame counters. Cumulative ones
+// (created/reused/unshared/vaos) are deliberately left alone.
+ObjectBufferTop.resetFrameStats = function () {
+  const st = ObjectBufferTop.stats
+  st.renders = 0
+  st.submitted = 0
+  st.skipDisabled = 0
+  st.skipNoTexture = 0
+  st.drawn = 0
+  st.wrongProg = 0
+  st.quads = 0
+  st.meshLoops = 0
+  st.emptyVerts = 0
+  st.flushes = 0
+}
 ObjectBufferTop.resetStats = function () {
   ObjectBufferTop.stats.created = 0
   ObjectBufferTop.stats.reused = 0

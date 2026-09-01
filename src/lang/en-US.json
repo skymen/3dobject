@@ -1,635 +1,644 @@
 {
-  "languageTag": "en-US",
-  "fileDescription": "Strings for 3DObject Plugin",
-  "text": {
-    "plugins": {
-      "mikal_3dobject": {
-        "name": "3D Object",
-        "description": "3D Object using the gltf/glb file format.",
-        "help-url": "https://kindeyegames.itch.io/c3-3dobject-alpha",
-        "properties": {
-          "obj-path": {
-            "name": "obj path",
-            "desc": "obj file path."
-          },
-          "mtl-path": {
-            "name": "mtl path",
-            "desc": "mtl file path."
-          },
-          "gtlf-path": {
-            "name": "gltf path",
-            "desc": "File path, supports .gltf or .glb files (subfoldername/filename.glb)."
-          },
-          "scale": {
-            "name": "Scale",
-            "desc": "Scale of the object."
-          },
-          "edit-image": {
-            "name": "Edit image",
-            "desc": "Edit image.",
-            "link-text": "Edit image"
-          },
-          "z-elevation": {
-            "name": "Obsolete, use zElevation",
-            "desc": "Obsolete, use zElevation."
-          },
-          "angle-x": {
-            "name": "Angle x",
-            "desc": "Angle x."
-          },
-          "angle-y": {
-            "name": "Angle y",
-            "desc": "Angle y."
-          },
-          "angle-z": {
-            "name": "Angle z",
-            "desc": "Angle z."
-          },
-          "rotation-order": {
-            "name": "Rotation order",
-            "desc": "Axis euler angle rotation order.",
-            "items": {
-              "xyz": "XYZ",
-              "xzy": "XZY",
-              "yxz": "YXZ",
-              "yzx": "YZX",
-              "zxy": "ZXY",
-              "zyx": "ZYX"
-            }
-          },
-          "debug": {
-            "name": "Debug",
-            "desc": "Whether debug info should be logged into the console."
-          },
-          "animation-blend": {
-            "name": "Animation blend",
-            "desc": "Animation blend time in seconds."
-          },
-          "instance-model": {
-            "name": "Instance model data",
-            "desc": "Whether each instance can have its own model data."
-          },
-          "image-texture": {
-            "name": "Image texture",
-            "desc": "Use only the image texture, ignore materials and other textures."
-          },
-          "x-scale": {
-            "name": "X scale",
-            "desc": "X scale (divisor, larger value makes model smaller)."
-          },
-          "y-scale": {
-            "name": "Y scale",
-            "desc": "Y scale (divisor, larger value makes model smaller)."
-          },
-          "z-scale": {
-            "name": "Z scale",
-            "desc": "Z scale (divisor, larger value makes model smaller)."
-          },
-          "wireframe": {
-            "name": "Wireframe",
-            "desc": "Render model as wireframe."
-          },
-          "worker-animation": {
-            "name": "Worker animation",
-            "desc": "Offload animation to worker, useful for animated models with complex geometry."
-          },
-          "cpu-xform": {
-            "name": "Worker BFC",
-            "desc": "Whether back face culling should be done by a worker."
-          },
-          "use-bone-bounding-box": {
-            "name": "Use bone bounding box",
-            "desc": "When enabled, calculates bounding box from bone positions (dynamic, follows animation). When disabled, uses static model bounding box."
-          },
-          "gpu-skinning": {
-            "name": "GPU skinning",
-            "desc": "Skin meshes on the GPU (bone matrices computed in the animation worker). Also avoids sending vertex data to the animation worker, greatly reducing memory per instance."
-          },
-          "distance-rate": {
-            "name": "Distance animation rate",
-            "desc": "Scale the animation update rate down with distance from the camera. Multiplies the rate set by the 'Set animation rate' action rather than replacing it, so events and this can both be used."
-          },
-          "distance-rate-min-dist": {
-            "name": "Rate min distance",
-            "desc": "Distance from the camera at or below which the animation rate is left at full ('Rate max rate')."
-          },
-          "distance-rate-max-dist": {
-            "name": "Rate max distance",
-            "desc": "Distance from the camera at or beyond which the animation rate is reduced to 'Rate min rate'."
-          },
-          "distance-rate-min-rate": {
-            "name": "Rate min rate",
-            "desc": "Animation updates per second at (and beyond) the max distance."
-          },
-          "distance-rate-max-rate": {
-            "name": "Rate max rate",
-            "desc": "Animation updates per second at (and within) the min distance. Also the reference rate: the distance factor is this rate's fraction of it, so a rate set by events is left unchanged at close range."
-          },
-          "start-hidden": {
-            "name": "Start with nodes hidden",
-            "desc": "Disable every mesh node as soon as the model is parsed, before its first animation update and first draw, so 'On model loaded' can enable only the nodes you want. Avoids the one-frame spike where the whole mesh list renders and animates before events hide it."
-          }
-        },
-        "aceCategories": {
-          "3dobject": "3DObject Misc",
-          "lighting": "3DObject Lighting",
-          "animations": "3DObject Animations",
-          "transform": "3DObject Transform",
-          "material": "3DObject Material"
-        },
-        "conditions": {
-          "is-node-enabled": {
-            "list-name": "Is node enabled",
-            "display-text": "Is node {0} enabled",
-            "description": "True if node is enabled.",
-            "params": {
-              "node-name": {
-                "name": "Node",
-                "desc": "Enter the name of node to check if enabled."
-              }
-            }
-          },
-          "on-loaded": {
-            "list-name": "On loaded",
-            "display-text": "On loaded",
-            "description": "Triggers when 3DObject has completed loading the 3D model."
-          },
-          "is-loaded": {
-            "list-name": "Is Loaded",
-            "display-text": "Is loaded",
-            "description": "True if the 3DObject has loaded its 3D model."
-          },
-          "on-animation-finished": {
-            "list-name": "On any animation finished",
-            "display-text": "On any animation finished",
-            "description": "Triggers when the animation has finished (only triggered if not looping)."
-          },
-          "on-animation-name-finished": {
-            "list-name": "On animation finished",
-            "display-text": "On animation [b]{0}[/b] finished",
-            "description": "Triggers when the named animation has finished (only triggered if not looping).",
-            "params": {
-              "name": {
-                "name": "Name",
-                "desc": "Enter the name of animation to check if playing."
-              }
-            }
-          },
-          "is-playing": {
-            "list-name": "Is playing",
-            "display-text": "Is animation [b]{0}[/b] playing",
-            "description": "Is the named animation playing.",
-            "params": {
-              "animation-name": {
-                "name": "Animation",
-                "desc": "Enter the name of animation to check if playing."
-              }
-            }
-          }
-        },
-        "actions": {
-          "set-gpu-skinning": {
-            "list-name": "Set gpu skinning",
-            "display-text": "Set gpu skinning {0}",
-            "description": "Set gpu skinning (static geometry must be enabled).",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable gpu skinning."
-              }
-            }
-          },
-          "set-z-elevation-0": {
-            "list-name": "Set z elevation",
-            "display-text": "Set z elevation to [i]{0}[/i]",
-            "description": "Set z elevation (world z axis, depth component).",
-            "params": {
-              "z-elevation": {
-                "name": "Zelevation",
-                "desc": "Zelevation (z axis, depth)"
-              }
-            }
-          },
-          "set-local-center": {
-            "list-name": "Set local center",
-            "display-text": "Set local center to [i]{0}, {1}, {2}[/i]",
-            "description": "Set the local center of the 3DObject in the model files coordinate system.",
-            "params": {
-              "x": {
-                "name": "X",
-                "desc": "X local coordinate of center"
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Y local coordinate of center"
-              },
-              "z": {
-                "name": "Z",
-                "desc": "Z local coordinate of center"
-              }
-            }
-          },
-          "set-scale": {
-            "list-name": "Set scale",
-            "display-text": "Set scale to [i]{0}[/i]",
-            "description": "Set scale from original object size.",
-            "params": {
-              "scale": {
-                "name": "Scale",
-                "desc": "The size to scale from the original size."
-              }
-            }
-          },
-          "set-rotation": {
-            "list-name": "Set X, Y, Z rotation",
-            "display-text": "Set rotation to [b]{0}, {1}, {2}[/b], [i]({3} rotation order)[/i]",
-            "description": "Set rotation of object from the original position, with rotation order.",
-            "params": {
-              "x": {
-                "name": "X",
-                "desc": "X angle of rotation."
-              },
-              "y": {
-                "name": "Y",
-                "desc": "Y angle of rotation."
-              },
-              "z": {
-                "name": "Z",
-                "desc": "Z angle of rotation."
-              },
-              "rotation-order": {
-                "name": "Rotation order",
-                "desc": "Order to rotate object around axes.",
-                "items": {
-                  "xyz": "XYZ",
-                  "xzy": "XZY",
-                  "yxz": "YXZ",
-                  "yzx": "YZX",
-                  "zxy": "ZXY",
-                  "zyx": "ZYX"
-                }
-              }
-            }
-          },
-          "play-animation": {
-            "list-name": "Play animation",
-            "display-text": "Play animation [b]{0}[/b], [i](is looping {1})[/i]",
-            "description": "Play animation by name.",
-            "params": {
-              "animation": {
-                "name": "Animation",
-                "desc": "The animation name to play."
-              },
-              "loop": {
-                "name": "Loop",
-                "desc": "Loop animation."
-              }
-            }
-          },
-          "stop-animation": {
-            "list-name": "Pause animation",
-            "display-text": "Pause animation",
-            "description": "Pause playing animation.",
-            "params": {}
-          },
-          "unpause-animation": {
-            "list-name": "Resume animation",
-            "display-text": "Resume animation",
-            "description": "Unpause playing animation.",
-            "params": {}
-          },
-          "set-animation-rate": {
-            "list-name": "Set animation rate",
-            "display-text": "Set animation rate to [i]{0}[/i]",
-            "description": "Set animation rate (FPS).",
-            "params": {
-              "rate": {
-                "name": "Rate",
-                "desc": "Rate (FPS)."
-              }
-            }
-          },
-          "set-animation-speed": {
-            "list-name": "Set animation speed",
-            "display-text": "Set animation speed to [i]{0}x[/i]",
-            "description": "Set animation speed.",
-            "params": {
-              "speed": {
-                "name": "Speed",
-                "desc": "Speed (multiplier)."
-              }
-            }
-          },
-          "set-x-scale": {
-            "list-name": "Set X scale",
-            "display-text": "Set X scale to [i]{0}[/i]",
-            "description": "Set X scale.",
-            "params": {
-              "x-scale": {
-                "name": "X scale",
-                "desc": "X scale."
-              }
-            }
-          },
-          "set-y-scale": {
-            "list-name": "Set Y scale",
-            "display-text": "Set Y scale to [i]{0}[/i]",
-            "description": "Set Y scale.",
-            "params": {
-              "y-scale": {
-                "name": "Y scale",
-                "desc": "Y scale."
-              }
-            }
-          },
-          "set-z-scale": {
-            "list-name": "Set Z scale",
-            "display-text": "Set Z scale to [i]{0}[/i]",
-            "description": "Set Z scale.",
-            "params": {
-              "z-scale": {
-                "name": "Z scale",
-                "desc": "Z scale."
-              }
-            }
-          },
-          "enable-node": {
-            "list-name": "Enable node",
-            "display-text": "Set node [i]{0}[/i] enable to [i]{1}[/i]",
-            "description": "Enable or disable node for render.",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name to enable or disable."
-              },
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable or disable node for render."
-              }
-            }
-          },
-          "enable-all-nodes": {
-            "list-name": "Enable all nodes",
-            "display-text": "Enable all nodes",
-            "description": "Enable all nodes for render.",
-            "params": {}
-          },
-          "disable-all-nodes": {
-            "list-name": "Disable all nodes",
-            "display-text": "Disable all nodes",
-            "description": "Disable all nodes for render.",
-            "params": {}
-          },
-          "set-animation-blend": {
-            "list-name": "Set animation blend time",
-            "display-text": "Set animation blend time to [i]{0}[/i] seconds",
-            "description": "Set animation blend time.",
-            "params": {
-              "blend-time": {
-                "name": "Blend time",
-                "desc": "Blend time in seconds."
-              }
-            }
-          },
-          "set-static-geometry": {
-            "list-name": "Set static geometry",
-            "display-text": "Set static geometry [i]{0}[/i]",
-            "description": "Set static geometry.",
-            "params": {
-              "enable": {
-                "name": "Enable",
-                "desc": "Enable static geometry."
-              }
-            }
-          }
-        },
-        "expressions": {
-          "animation-names": {
-            "description": "Get animation names as JSON string.",
-            "translated-name": "AnimationNames",
-            "params": {}
-          },
-          "z-elevation-0": {
-            "description": "Get Z elevation-0.",
-            "translated-name": "ZElevation-0",
-            "params": {}
-          },
-          "current-animation": {
-            "description": "Get the current animation name.",
-            "translated-name": "CurrentAnimation",
-            "params": {}
-          },
-          "current-animation-time": {
-            "description": "Get current animation time.",
-            "translated-name": "CurrentAnimationTime",
-            "params": {}
-          },
-          "current-animation-frame": {
-            "description": "Get the current animation frame.",
-            "translated-name": "CurrentAnimationFrame",
-            "params": {}
-          },
-          "scale": {
-            "description": "Get scale.",
-            "translated-name": "Scale",
-            "params": {}
-          },
-          "x-scale": {
-            "description": "Get X scale.",
-            "translated-name": "XScale",
-            "params": {}
-          },
-          "y-scale": {
-            "description": "Get Y scale.",
-            "translated-name": "YScale",
-            "params": {}
-          },
-          "z-scale": {
-            "description": "Get Z scale.",
-            "translated-name": "ZScale",
-            "params": {}
-          },
-          "mesh-names": {
-            "description": "Get mesh names.",
-            "translated-name": "MeshNames",
-            "params": {}
-          },
-          "material-names": {
-            "description": "Get material names.",
-            "translated-name": "MaterialNames",
-            "params": {}
-          },
-          "x-angle": {
-            "description": "Get x angle.",
-            "translated-name": "XAngle",
-            "params": {}
-          },
-          "y-angle": {
-            "description": "Get Y angle.",
-            "translated-name": "YAngle",
-            "params": {}
-          },
-          "z-angle": {
-            "description": "Get Z angle.",
-            "translated-name": "ZAngle",
-            "params": {}
-          },
-          "x-bb-min": {
-            "description": "Get X bounding box min.",
-            "translated-name": "XBBMin",
-            "params": {}
-          },
-          "y-bb-min": {
-            "description": "Get Y bounding box min.",
-            "translated-name": "YBBMin",
-            "params": {}
-          },
-          "z-bb-min": {
-            "description": "Get Z bounding box min.",
-            "translated-name": "ZBBMin",
-            "params": {}
-          },
-          "x-bb-max": {
-            "description": "Get X bounding box max.",
-            "translated-name": "XBBMax",
-            "params": {}
-          },
-          "y-bb-max": {
-            "description": "Get y bounding box max.",
-            "translated-name": "YBBMax",
-            "params": {}
-          },
-          "z-bb-max": {
-            "description": "Get z bounding box max.",
-            "translated-name": "ZBBMax",
-            "params": {}
-          },
-          "use-bone-bounding-box": {
-            "description": "Returns 1 if bone-based bounding box is enabled, 0 if using static bounding box.",
-            "translated-name": "UseBoneBoundingBox",
-            "params": {}
-          },
-          "animation-blend-time": {
-            "description": "Animation blend time in seconds.",
-            "translated-name": "AnimationBlendTime",
-            "params": {}
-          },
-          "animation-speed": {
-            "description": "Animation speed.",
-            "translated-name": "AnimationSpeed",
-            "params": {}
-          },
-          "total-triangles": {
-            "description": "Total triangles to be rendered.",
-            "translated-name": "TotalTriangles",
-            "params": {}
-          },
-          "node-bounding-box": {
-            "description": "Node bounding box.",
-            "translated-name": "NodeBoundingBox",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Node name."
-              }
-            }
-          },
-          "node-world-position": {
-            "description": "Get world position of a node as JSON string {x, y, z}. Works for any scene node.",
-            "translated-name": "NodeWorldPosition",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Name of the node to get position from."
-              }
-            }
-          },
-          "node-world-position-x": {
-            "description": "Get the X component of a node's world position.",
-            "translated-name": "NodeWorldPositionX",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Name of the node to get X position from."
-              }
-            }
-          },
-          "node-world-position-y": {
-            "description": "Get the Y component of a node's world position.",
-            "translated-name": "NodeWorldPositionY",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Name of the node to get Y position from."
-              }
-            }
-          },
-          "node-world-position-z": {
-            "description": "Get the Z component of a node's world position.",
-            "translated-name": "NodeWorldPositionZ",
-            "params": {
-              "node-name": {
-                "name": "Node name",
-                "desc": "Name of the node to get Z position from."
-              }
-            }
-          },
-          "bone-world-position": {
-            "description": "Get world position of a bone/joint as JSON string {x, y, z}. For tracking skeletal animation bones.",
-            "translated-name": "BoneWorldPosition",
-            "params": {
-              "bone-name": {
-                "name": "Bone name",
-                "desc": "Name of the bone/joint to get position from."
-              }
-            }
-          },
-          "bone-world-position-x": {
-            "description": "Get the X component of a bone's world position.",
-            "translated-name": "BoneWorldPositionX",
-            "params": {
-              "bone-name": {
-                "name": "Bone name",
-                "desc": "Name of the bone/joint to get X position from."
-              }
-            }
-          },
-          "bone-world-position-y": {
-            "description": "Get the Y component of a bone's world position.",
-            "translated-name": "BoneWorldPositionY",
-            "params": {
-              "bone-name": {
-                "name": "Bone name",
-                "desc": "Name of the bone/joint to get Y position from."
-              }
-            }
-          },
-          "bone-world-position-z": {
-            "description": "Get the Z component of a bone's world position.",
-            "translated-name": "BoneWorldPositionZ",
-            "params": {
-              "bone-name": {
-                "name": "Bone name",
-                "desc": "Name of the bone/joint to get Z position from."
-              }
-            }
-          },
-          "bone-names": {
-            "description": "Get list of all bone/joint names as JSON array string.",
-            "translated-name": "BoneNames",
-            "params": {}
-          },
-          "node-names": {
-            "description": "Get list of all node names as JSON array string.",
-            "translated-name": "NodeNames",
-            "params": {}
-          },
-          "effective-animation-rate": {
-            "description": "The animation update rate actually in use: the rate set by 'Set animation rate' after the distance-based factor. Equals AnimationRate when the distance feature is off or the model is within the min distance.",
-            "translated-name": "EffectiveAnimationRate"
-          }
-        }
-      }
-    }
-  }
+	"languageTag": "en-US",
+	"fileDescription": "Strings for 3DObject Plugin",
+	"text": {
+		"plugins": {
+			"mikal_3dobject": {
+				"name": "3D Object",
+				"description": "3D Object using the gltf/glb file format.",
+				"help-url": "https://kindeyegames.itch.io/c3-3dobject-alpha",
+				"properties": {
+					"obj-path": {
+						"name": "obj path",
+						"desc": "obj file path."
+					},
+					"mtl-path": {
+						"name": "mtl path",
+						"desc": "mtl file path."
+					},
+					"gtlf-path": {
+						"name": "gltf path",
+						"desc": "File path, supports .gltf or .glb files (subfoldername/filename.glb)."
+					},
+					"scale": {
+						"name": "Scale",
+						"desc": "Scale of the object."
+					},
+					"edit-image": {
+						"name": "Edit image",
+						"desc": "Edit image.",
+						"link-text": "Edit image"
+					},
+					"z-elevation": {
+						"name": "Obsolete, use zElevation",
+						"desc": "Obsolete, use zElevation."
+					},
+					"angle-x": {
+						"name": "Angle x",
+						"desc": "Angle x."
+					},
+					"angle-y": {
+						"name": "Angle y",
+						"desc": "Angle y."
+					},
+					"angle-z": {
+						"name": "Angle z",
+						"desc": "Angle z."
+					},
+					"rotation-order": {
+						"name": "Rotation order",
+						"desc": "Axis euler angle rotation order.",
+						"items": {
+							"xyz": "XYZ",
+							"xzy": "XZY",
+							"yxz": "YXZ",
+							"yzx": "YZX",
+							"zxy": "ZXY",
+							"zyx": "ZYX"
+						}
+					},
+					"debug": {
+						"name": "Debug",
+						"desc": "Whether debug info should be logged into the console."
+					},
+					"animation-blend": {
+						"name": "Animation blend",
+						"desc": "Animation blend time in seconds."
+					},
+					"instance-model": {
+						"name": "Instance model data",
+						"desc": "Whether each instance can have its own model data."
+					},
+					"image-texture": {
+						"name": "Image texture",
+						"desc": "Use only the image texture, ignore materials and other textures."
+					},
+					"x-scale": {
+						"name": "X scale",
+						"desc": "X scale (divisor, larger value makes model smaller)."
+					},
+					"y-scale": {
+						"name": "Y scale",
+						"desc": "Y scale (divisor, larger value makes model smaller)."
+					},
+					"z-scale": {
+						"name": "Z scale",
+						"desc": "Z scale (divisor, larger value makes model smaller)."
+					},
+					"wireframe": {
+						"name": "Wireframe",
+						"desc": "Render model as wireframe."
+					},
+					"worker-animation": {
+						"name": "Worker animation",
+						"desc": "Offload animation to worker, useful for animated models with complex geometry."
+					},
+					"cpu-xform": {
+						"name": "Worker BFC",
+						"desc": "Whether back face culling should be done by a worker."
+					},
+					"use-bone-bounding-box": {
+						"name": "Use bone bounding box",
+						"desc": "When enabled, calculates bounding box from bone positions (dynamic, follows animation). When disabled, uses static model bounding box."
+					},
+					"gpu-skinning": {
+						"name": "GPU skinning",
+						"desc": "Skin meshes on the GPU (bone matrices computed in the animation worker). Also avoids sending vertex data to the animation worker, greatly reducing memory per instance."
+					},
+					"distance-rate": {
+						"name": "Distance animation rate",
+						"desc": "Scale the animation update rate down with distance from the camera. Multiplies the rate set by the 'Set animation rate' action rather than replacing it, so events and this can both be used."
+					},
+					"distance-rate-min-dist": {
+						"name": "Rate min distance",
+						"desc": "Distance from the camera at or below which the animation rate is left at full ('Rate max rate')."
+					},
+					"distance-rate-max-dist": {
+						"name": "Rate max distance",
+						"desc": "Distance from the camera at or beyond which the animation rate is reduced to 'Rate min rate'."
+					},
+					"distance-rate-min-rate": {
+						"name": "Rate min rate",
+						"desc": "Animation updates per second at (and beyond) the max distance."
+					},
+					"distance-rate-max-rate": {
+						"name": "Rate max rate",
+						"desc": "Animation updates per second at (and within) the min distance. Also the reference rate: the distance factor is this rate's fraction of it, so a rate set by events is left unchanged at close range."
+					},
+					"start-hidden": {
+						"name": "Start with nodes hidden",
+						"desc": "Disable every mesh node as soon as the model is parsed, before its first animation update and first draw, so 'On model loaded' can enable only the nodes you want. Avoids the one-frame spike where the whole mesh list renders and animates before events hide it."
+					},
+					"static-mesh": {
+						"name": "Static mesh",
+						"desc": "Upload the mesh to a GPU buffer once and draw it with a single call, instead of submitting one quad per triangle every frame. 'Auto' enables it for models that have no animations.",
+						"items": {
+							"off": "Off",
+							"on": "On",
+							"auto": "Auto (non-animated models)"
+						}
+					}
+				},
+				"aceCategories": {
+					"3dobject": "3DObject Misc",
+					"lighting": "3DObject Lighting",
+					"animations": "3DObject Animations",
+					"transform": "3DObject Transform",
+					"material": "3DObject Material"
+				},
+				"conditions": {
+					"is-node-enabled": {
+						"list-name": "Is node enabled",
+						"display-text": "Is node {0} enabled",
+						"description": "True if node is enabled.",
+						"params": {
+							"node-name": {
+								"name": "Node",
+								"desc": "Enter the name of node to check if enabled."
+							}
+						}
+					},
+					"on-loaded": {
+						"list-name": "On loaded",
+						"display-text": "On loaded",
+						"description": "Triggers when 3DObject has completed loading the 3D model."
+					},
+					"is-loaded": {
+						"list-name": "Is Loaded",
+						"display-text": "Is loaded",
+						"description": "True if the 3DObject has loaded its 3D model."
+					},
+					"on-animation-finished": {
+						"list-name": "On any animation finished",
+						"display-text": "On any animation finished",
+						"description": "Triggers when the animation has finished (only triggered if not looping)."
+					},
+					"on-animation-name-finished": {
+						"list-name": "On animation finished",
+						"display-text": "On animation [b]{0}[/b] finished",
+						"description": "Triggers when the named animation has finished (only triggered if not looping).",
+						"params": {
+							"name": {
+								"name": "Name",
+								"desc": "Enter the name of animation to check if playing."
+							}
+						}
+					},
+					"is-playing": {
+						"list-name": "Is playing",
+						"display-text": "Is animation [b]{0}[/b] playing",
+						"description": "Is the named animation playing.",
+						"params": {
+							"animation-name": {
+								"name": "Animation",
+								"desc": "Enter the name of animation to check if playing."
+							}
+						}
+					}
+				},
+				"actions": {
+					"set-gpu-skinning": {
+						"list-name": "Set gpu skinning",
+						"display-text": "Set gpu skinning {0}",
+						"description": "Set gpu skinning (static geometry must be enabled).",
+						"params": {
+							"enable": {
+								"name": "Enable",
+								"desc": "Enable gpu skinning."
+							}
+						}
+					},
+					"set-z-elevation-0": {
+						"list-name": "Set z elevation",
+						"display-text": "Set z elevation to [i]{0}[/i]",
+						"description": "Set z elevation (world z axis, depth component).",
+						"params": {
+							"z-elevation": {
+								"name": "Zelevation",
+								"desc": "Zelevation (z axis, depth)"
+							}
+						}
+					},
+					"set-local-center": {
+						"list-name": "Set local center",
+						"display-text": "Set local center to [i]{0}, {1}, {2}[/i]",
+						"description": "Set the local center of the 3DObject in the model files coordinate system.",
+						"params": {
+							"x": {
+								"name": "X",
+								"desc": "X local coordinate of center"
+							},
+							"y": {
+								"name": "Y",
+								"desc": "Y local coordinate of center"
+							},
+							"z": {
+								"name": "Z",
+								"desc": "Z local coordinate of center"
+							}
+						}
+					},
+					"set-scale": {
+						"list-name": "Set scale",
+						"display-text": "Set scale to [i]{0}[/i]",
+						"description": "Set scale from original object size.",
+						"params": {
+							"scale": {
+								"name": "Scale",
+								"desc": "The size to scale from the original size."
+							}
+						}
+					},
+					"set-rotation": {
+						"list-name": "Set X, Y, Z rotation",
+						"display-text": "Set rotation to [b]{0}, {1}, {2}[/b], [i]({3} rotation order)[/i]",
+						"description": "Set rotation of object from the original position, with rotation order.",
+						"params": {
+							"x": {
+								"name": "X",
+								"desc": "X angle of rotation."
+							},
+							"y": {
+								"name": "Y",
+								"desc": "Y angle of rotation."
+							},
+							"z": {
+								"name": "Z",
+								"desc": "Z angle of rotation."
+							},
+							"rotation-order": {
+								"name": "Rotation order",
+								"desc": "Order to rotate object around axes.",
+								"items": {
+									"xyz": "XYZ",
+									"xzy": "XZY",
+									"yxz": "YXZ",
+									"yzx": "YZX",
+									"zxy": "ZXY",
+									"zyx": "ZYX"
+								}
+							}
+						}
+					},
+					"play-animation": {
+						"list-name": "Play animation",
+						"display-text": "Play animation [b]{0}[/b], [i](is looping {1})[/i]",
+						"description": "Play animation by name.",
+						"params": {
+							"animation": {
+								"name": "Animation",
+								"desc": "The animation name to play."
+							},
+							"loop": {
+								"name": "Loop",
+								"desc": "Loop animation."
+							}
+						}
+					},
+					"stop-animation": {
+						"list-name": "Pause animation",
+						"display-text": "Pause animation",
+						"description": "Pause playing animation.",
+						"params": {}
+					},
+					"unpause-animation": {
+						"list-name": "Resume animation",
+						"display-text": "Resume animation",
+						"description": "Unpause playing animation.",
+						"params": {}
+					},
+					"set-animation-rate": {
+						"list-name": "Set animation rate",
+						"display-text": "Set animation rate to [i]{0}[/i]",
+						"description": "Set animation rate (FPS).",
+						"params": {
+							"rate": {
+								"name": "Rate",
+								"desc": "Rate (FPS)."
+							}
+						}
+					},
+					"set-animation-speed": {
+						"list-name": "Set animation speed",
+						"display-text": "Set animation speed to [i]{0}x[/i]",
+						"description": "Set animation speed.",
+						"params": {
+							"speed": {
+								"name": "Speed",
+								"desc": "Speed (multiplier)."
+							}
+						}
+					},
+					"set-x-scale": {
+						"list-name": "Set X scale",
+						"display-text": "Set X scale to [i]{0}[/i]",
+						"description": "Set X scale.",
+						"params": {
+							"x-scale": {
+								"name": "X scale",
+								"desc": "X scale."
+							}
+						}
+					},
+					"set-y-scale": {
+						"list-name": "Set Y scale",
+						"display-text": "Set Y scale to [i]{0}[/i]",
+						"description": "Set Y scale.",
+						"params": {
+							"y-scale": {
+								"name": "Y scale",
+								"desc": "Y scale."
+							}
+						}
+					},
+					"set-z-scale": {
+						"list-name": "Set Z scale",
+						"display-text": "Set Z scale to [i]{0}[/i]",
+						"description": "Set Z scale.",
+						"params": {
+							"z-scale": {
+								"name": "Z scale",
+								"desc": "Z scale."
+							}
+						}
+					},
+					"enable-node": {
+						"list-name": "Enable node",
+						"display-text": "Set node [i]{0}[/i] enable to [i]{1}[/i]",
+						"description": "Enable or disable node for render.",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Node name to enable or disable."
+							},
+							"enable": {
+								"name": "Enable",
+								"desc": "Enable or disable node for render."
+							}
+						}
+					},
+					"enable-all-nodes": {
+						"list-name": "Enable all nodes",
+						"display-text": "Enable all nodes",
+						"description": "Enable all nodes for render.",
+						"params": {}
+					},
+					"disable-all-nodes": {
+						"list-name": "Disable all nodes",
+						"display-text": "Disable all nodes",
+						"description": "Disable all nodes for render.",
+						"params": {}
+					},
+					"set-animation-blend": {
+						"list-name": "Set animation blend time",
+						"display-text": "Set animation blend time to [i]{0}[/i] seconds",
+						"description": "Set animation blend time.",
+						"params": {
+							"blend-time": {
+								"name": "Blend time",
+								"desc": "Blend time in seconds."
+							}
+						}
+					},
+					"set-static-geometry": {
+						"list-name": "Set static geometry",
+						"display-text": "Set static geometry [i]{0}[/i]",
+						"description": "Set static geometry.",
+						"params": {
+							"enable": {
+								"name": "Enable",
+								"desc": "Enable static geometry."
+							}
+						}
+					}
+				},
+				"expressions": {
+					"animation-names": {
+						"description": "Get animation names as JSON string.",
+						"translated-name": "AnimationNames",
+						"params": {}
+					},
+					"z-elevation-0": {
+						"description": "Get Z elevation-0.",
+						"translated-name": "ZElevation-0",
+						"params": {}
+					},
+					"current-animation": {
+						"description": "Get the current animation name.",
+						"translated-name": "CurrentAnimation",
+						"params": {}
+					},
+					"current-animation-time": {
+						"description": "Get current animation time.",
+						"translated-name": "CurrentAnimationTime",
+						"params": {}
+					},
+					"current-animation-frame": {
+						"description": "Get the current animation frame.",
+						"translated-name": "CurrentAnimationFrame",
+						"params": {}
+					},
+					"scale": {
+						"description": "Get scale.",
+						"translated-name": "Scale",
+						"params": {}
+					},
+					"x-scale": {
+						"description": "Get X scale.",
+						"translated-name": "XScale",
+						"params": {}
+					},
+					"y-scale": {
+						"description": "Get Y scale.",
+						"translated-name": "YScale",
+						"params": {}
+					},
+					"z-scale": {
+						"description": "Get Z scale.",
+						"translated-name": "ZScale",
+						"params": {}
+					},
+					"mesh-names": {
+						"description": "Get mesh names.",
+						"translated-name": "MeshNames",
+						"params": {}
+					},
+					"material-names": {
+						"description": "Get material names.",
+						"translated-name": "MaterialNames",
+						"params": {}
+					},
+					"x-angle": {
+						"description": "Get x angle.",
+						"translated-name": "XAngle",
+						"params": {}
+					},
+					"y-angle": {
+						"description": "Get Y angle.",
+						"translated-name": "YAngle",
+						"params": {}
+					},
+					"z-angle": {
+						"description": "Get Z angle.",
+						"translated-name": "ZAngle",
+						"params": {}
+					},
+					"x-bb-min": {
+						"description": "Get X bounding box min.",
+						"translated-name": "XBBMin",
+						"params": {}
+					},
+					"y-bb-min": {
+						"description": "Get Y bounding box min.",
+						"translated-name": "YBBMin",
+						"params": {}
+					},
+					"z-bb-min": {
+						"description": "Get Z bounding box min.",
+						"translated-name": "ZBBMin",
+						"params": {}
+					},
+					"x-bb-max": {
+						"description": "Get X bounding box max.",
+						"translated-name": "XBBMax",
+						"params": {}
+					},
+					"y-bb-max": {
+						"description": "Get y bounding box max.",
+						"translated-name": "YBBMax",
+						"params": {}
+					},
+					"z-bb-max": {
+						"description": "Get z bounding box max.",
+						"translated-name": "ZBBMax",
+						"params": {}
+					},
+					"use-bone-bounding-box": {
+						"description": "Returns 1 if bone-based bounding box is enabled, 0 if using static bounding box.",
+						"translated-name": "UseBoneBoundingBox",
+						"params": {}
+					},
+					"animation-blend-time": {
+						"description": "Animation blend time in seconds.",
+						"translated-name": "AnimationBlendTime",
+						"params": {}
+					},
+					"animation-speed": {
+						"description": "Animation speed.",
+						"translated-name": "AnimationSpeed",
+						"params": {}
+					},
+					"total-triangles": {
+						"description": "Total triangles to be rendered.",
+						"translated-name": "TotalTriangles",
+						"params": {}
+					},
+					"node-bounding-box": {
+						"description": "Node bounding box.",
+						"translated-name": "NodeBoundingBox",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Node name."
+							}
+						}
+					},
+					"node-world-position": {
+						"description": "Get world position of a node as JSON string {x, y, z}. Works for any scene node.",
+						"translated-name": "NodeWorldPosition",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Name of the node to get position from."
+							}
+						}
+					},
+					"node-world-position-x": {
+						"description": "Get the X component of a node's world position.",
+						"translated-name": "NodeWorldPositionX",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Name of the node to get X position from."
+							}
+						}
+					},
+					"node-world-position-y": {
+						"description": "Get the Y component of a node's world position.",
+						"translated-name": "NodeWorldPositionY",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Name of the node to get Y position from."
+							}
+						}
+					},
+					"node-world-position-z": {
+						"description": "Get the Z component of a node's world position.",
+						"translated-name": "NodeWorldPositionZ",
+						"params": {
+							"node-name": {
+								"name": "Node name",
+								"desc": "Name of the node to get Z position from."
+							}
+						}
+					},
+					"bone-world-position": {
+						"description": "Get world position of a bone/joint as JSON string {x, y, z}. For tracking skeletal animation bones.",
+						"translated-name": "BoneWorldPosition",
+						"params": {
+							"bone-name": {
+								"name": "Bone name",
+								"desc": "Name of the bone/joint to get position from."
+							}
+						}
+					},
+					"bone-world-position-x": {
+						"description": "Get the X component of a bone's world position.",
+						"translated-name": "BoneWorldPositionX",
+						"params": {
+							"bone-name": {
+								"name": "Bone name",
+								"desc": "Name of the bone/joint to get X position from."
+							}
+						}
+					},
+					"bone-world-position-y": {
+						"description": "Get the Y component of a bone's world position.",
+						"translated-name": "BoneWorldPositionY",
+						"params": {
+							"bone-name": {
+								"name": "Bone name",
+								"desc": "Name of the bone/joint to get Y position from."
+							}
+						}
+					},
+					"bone-world-position-z": {
+						"description": "Get the Z component of a bone's world position.",
+						"translated-name": "BoneWorldPositionZ",
+						"params": {
+							"bone-name": {
+								"name": "Bone name",
+								"desc": "Name of the bone/joint to get Z position from."
+							}
+						}
+					},
+					"bone-names": {
+						"description": "Get list of all bone/joint names as JSON array string.",
+						"translated-name": "BoneNames",
+						"params": {}
+					},
+					"node-names": {
+						"description": "Get list of all node names as JSON array string.",
+						"translated-name": "NodeNames",
+						"params": {}
+					},
+					"effective-animation-rate": {
+						"description": "The animation update rate actually in use: the rate set by 'Set animation rate' after the distance-based factor. Equals AnimationRate when the distance feature is off or the model is within the min distance.",
+						"translated-name": "EffectiveAnimationRate"
+					}
+				}
+			}
+		}
+	}
 }

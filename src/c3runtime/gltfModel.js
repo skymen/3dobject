@@ -285,9 +285,13 @@ class GltfModelTop {
     let baseColorChanged = false
     if (!vec4.equals(currentColor, [1, 1, 1, 1])) baseColorChanged = true
 
+    globalThis.ObjectBuffer.stats.renders++
     for (let j = 0; j <= this.drawMeshesIndex; j++) {
       // Skip render if disabled
-      if (this.drawMeshes[j].disabled) continue
+      if (this.drawMeshes[j].disabled) {
+        globalThis.ObjectBuffer.stats.skipDisabled++
+        continue
+      }
 
       const drawVerts = this.drawMeshes[j].drawVerts
 
@@ -322,7 +326,10 @@ class GltfModelTop {
         } else {
           let texture = textures[material.name]
           // If texture is not loaded, skip rendering
-          if (!texture) continue
+          if (!texture) {
+            globalThis.ObjectBuffer.stats.skipNoTexture++
+            continue
+          }
           if (texture != currentTexture) {
             renderer.SetTexture(texture)
             currentTexture = texture
@@ -340,11 +347,13 @@ class GltfModelTop {
           instanceBoneBuffer = this.drawMeshes[j]?.boneBuffer
           this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
 
+          globalThis.ObjectBuffer.stats.submitted++
           objectBuffers[i].draw(
             renderer,
             instanceBoneBuffer,
             this._sdkType.gltfData,
-            currentColor // Pass calculated color to draw method
+            currentColor, // Pass calculated color to draw method
+            this.drawMeshes[j].morphWeights
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
         }
@@ -355,6 +364,8 @@ class GltfModelTop {
         continue
       }
 
+      globalThis.ObjectBuffer.stats.meshLoops++
+      if (drawVerts.length === 0) globalThis.ObjectBuffer.stats.emptyVerts++
       for (let ii = 0; ii < drawVerts.length; ii++) {
         let v = xVerts[ii]
         let uv = drawUVs[ii]
@@ -399,6 +410,7 @@ class GltfModelTop {
             // Set base color
             renderer.SetColorRgba(currentColor[0], currentColor[1], currentColor[2], currentColor[3])
 
+            globalThis.ObjectBuffer.stats.quads++
             renderer.Quad3D2(x0, y0, z0, x1, y1, z1, x2, y2, z2, x2, y2, z2, tempQuad, true)
           }
         }
@@ -562,6 +574,8 @@ class GltfModelTop {
             drawWeights: [],
             disabled: false,
             objectBuffers: [],
+            morphTargets: [],
+            morphWeights: null,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)
@@ -654,6 +668,13 @@ class GltfModelTop {
 
             if (drawIndices.length === 0)
               drawIndices.push(sharedOrCopy(node.mesh.primitives[i].indices.data, Uint16Array))
+            // Targets are immutable model data shared between instances; weights
+            // are the per-instance part and are read fresh at draw time.
+            if (morphActive) {
+              const dm = this.drawMeshes[this.drawMeshesIndex]
+              if (dm.morphTargets.length === 0) dm.morphTargets.push(morphTargets)
+              dm.morphWeights = morphWeights
+            }
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(
@@ -792,6 +813,8 @@ class GltfModelTop {
             drawVertsOrig: [],
             disabled: true,
             objectBuffers: [],
+            morphTargets: [],
+            morphWeights: null,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)
@@ -929,6 +952,13 @@ class GltfModelTop {
             }
             if (drawIndices.length === 0)
               drawIndices.push(sharedOrCopy(node.mesh.primitives[i].indices.data, Uint16Array))
+            // Targets are immutable model data shared between instances; weights
+            // are the per-instance part and are read fresh at draw time.
+            if (morphActive) {
+              const dm = this.drawMeshes[this.drawMeshesIndex]
+              if (dm.morphTargets.length === 0) dm.morphTargets.push(morphTargets)
+              dm.morphWeights = morphWeights
+            }
             if (staticGeometry) {
               if (objectBuffers.length == 0) {
                 objectBuffers.push(

@@ -92,6 +92,7 @@ class DeferredBatchTop {
         const b = this._c3obj_b
         const c = this._c3obj_c
         const d = this._c3obj_d
+        const e = this._c3obj_e
         // Batch jobs are pooled and live for the lifetime of the renderer, so
         // anything left referenced here would never be collected. Clear before
         // invoking, so a throwing callback can't leak either.
@@ -101,10 +102,23 @@ class DeferredBatchTop {
         this._c3obj_b = null
         this._c3obj_c = null
         this._c3obj_d = null
-        if (fn) fn.call(self, a, b, c, d)
+        this._c3obj_e = null
+        if (fn) fn.call(self, a, b, c, d, e)
         return
       }
       return origRun.call(this)
+    }
+
+    // DEBUG (temporary): how many times C3 drains the command list per frame.
+    // _AddToDrawBatch forces one whenever the 65535-vertex buffer fills.
+    if (!renderer._c3obj_endBatchWrapped) {
+      const origEndBatch = renderer.EndBatch
+      renderer.EndBatch = function () {
+        const st = globalThis.ObjectBuffer && globalThis.ObjectBuffer.stats
+        if (st) st.flushes++
+        return origEndBatch.call(this)
+      }
+      renderer._c3obj_endBatchWrapped = true
     }
 
     DeferredBatchTop._origRun = origRun
@@ -127,7 +141,7 @@ class DeferredBatchTop {
    * scene with hundreds of models doesn't allocate hundreds of closures every
    * frame.
    */
-  static push(renderer, fn, self, a, b, c, d) {
+  static push(renderer, fn, self, a, b, c, d, e) {
     DeferredBatchTop.stats.pushed++
     const job = renderer.PushBatch()
     job._type = BATCH_CUSTOM_CALLBACK
@@ -137,6 +151,7 @@ class DeferredBatchTop {
     job._c3obj_b = b === undefined ? null : b
     job._c3obj_c = c === undefined ? null : c
     job._c3obj_d = d === undefined ? null : d
+    job._c3obj_e = e === undefined ? null : e
     // A callback may do anything, so the next quad must start a fresh draw job
     // rather than merging into whichever one preceded this.
     renderer._topOfBatch = 0

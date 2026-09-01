@@ -5,6 +5,10 @@
   /** Layer → per-tick camera position. See Instance._GetCameraPosition(). */
   const camPosCache = new WeakMap()
 
+  // Bind-pose joint radii, keyed on the shared inverse-bind accessor so every
+  // instance of a model reuses one computation. See _jointRadii().
+  const jointRadiiCache = new WeakMap()
+
   C3.Plugins.Mikal_3DObject.Instance = class Object3DInstance extends C3.SDKWorldInstanceBase {
     constructor(inst, properties) {
       super(inst)
@@ -42,6 +46,7 @@
       this.animationNameFinished = ""
       this.totalTriangles = 0
       this.staticGeometry = false
+      this.staticMeshMode = 0
       this.gpuSkinning = false
       // Distance-based animation rate. See _GetDistanceRateFactor().
       this.distanceRate = false
@@ -98,6 +103,9 @@
         this.distanceRateMinRate = properties[22]
         this.distanceRateMaxRate = properties[23]
         this.startHidden = properties[24] === true
+        // 0 = off, 1 = on, 2 = auto (resolved in doInit once animations are known)
+        this.staticMeshMode = properties[25] || 0
+        if (this.staticMeshMode === 1) this.staticGeometry = true
       }
 
       this.localCenter = [0, 0, 0]
@@ -132,6 +140,10 @@
         this.sdkType
           .LoadDynamicTextures(this.renderer, this.sdkType.gltfData, this.sdkType.texture, this.sdkType)
           .catch((err) => console.error("[3DObject] texture load failed", err))
+      }
+
+      if (this.staticMeshMode === 2) {
+        this.staticGeometry = this.gltf.getAnimationNames().length === 0
       }
 
       this.loaded = true
@@ -426,9 +438,28 @@
       const useStaticBbox = gpuSkinning || !hasValidDynamicBbox
 
       if (useStaticBbox) {
-        // Prefer the bounds of the currently ENABLED nodes (e.g. the active skin);
-        // fall back to the whole-model bounds
-        const enabled = this._enabledLocalBounds()
+        // Union the pose-aware skinned bounds with the bind-pose box: the posed
+        // bounds only cover skinned nodes, so a model that mixes skinned and
+        // static meshes would otherwise lose the static ones. The union is never
+        // smaller than either, so it cannot cull early.
+        const posed = this._poseLocalBounds()
+        let enabled = this._enabledLocalBounds()
+        if (posed && enabled) {
+          enabled = {
+            min: [
+              Math.min(posed.min[0], enabled.min[0]),
+              Math.min(posed.min[1], enabled.min[1]),
+              Math.min(posed.min[2], enabled.min[2]),
+            ],
+            max: [
+              Math.max(posed.max[0], enabled.max[0]),
+              Math.max(posed.max[1], enabled.max[1]),
+              Math.max(posed.max[2], enabled.max[2]),
+            ],
+          }
+        } else if (posed) {
+          enabled = posed
+        }
         if (enabled) {
           maxBB = enabled.max
           minBB = enabled.min
@@ -757,6 +788,111 @@
     // Local bounds of ENABLED nodes only (bind pose), used for the GPU-skinning
     // bounding box so a character shows the box of its active skin rather than the
     // union of every variant. Cached; invalidated when nodes are toggled.
+    /**
+     * Bind-pose radius of every joint, computed once per model.
+     *
+     * For each joint we take its bind position (the translation of the inverse
+     * of its inverse-bind matrix) and the furthest vertex weighted to it. A
+     * posed vertex is `boneMatrix * v_bind`, so it stays inside a sphere at
+     * `boneMatrix * p_bind` with that radius scaled by the matrix's basis - which
+     * is what _poseLocalBounds() unions up.
+     *
+     * Cached on the shared inverse-bind accessor, so instances of the same model
+     * pay for it once.
+     */
+    _jointRadii(skin) {
+      if (!skin || !skin.joints || !skin.inverseBindMatrices || !skin.inverseBindMatrices.data) return null
+      const key = skin.inverseBindMatrices.data
+      let entry = jointRadiiCache.get(key)
+      if (entry !== undefined) return entry
+
+      const mat4 = globalThis.glMatrix3D.mat4
+      const vec3 = globalThis.glMatrix3D.vec3
+      const joints = skin.joints
+      const positions = new Float32Array(joints.length * 3)
+      const radii = new Float32Array(joints.length)
+      const inv = mat4.create()
+      for (let j = 0; j < joints.length; j++) {
+        if (!mat4.invert(inv, joints[j].invBindMatrix)) continue
+        positions[j * 3] = inv[12]
+        positions[j * 3 + 1] = inv[13]
+        positions[j * 3 + 2] = inv[14]
+      }
+
+      const gltf = this.gltf?.gltfData
+      const v = vec3.create()
+      for (const node of gltf.skinnedNodes || []) {
+        if (node.skin !== skin || !node.mesh) continue
+        for (const prim of node.mesh.primitives) {
+          const pos = prim.attributes.POSITION && prim.attributes.POSITION.data
+          const jnt = prim.attributes.JOINTS_0 && prim.attributes.JOINTS_0.data
+          const wgt = prim.attributes.WEIGHTS_0 && prim.attributes.WEIGHTS_0.data
+          if (!pos || !jnt || !wgt) continue
+          for (let i = 0, n = pos.length / 3; i < n; i++) {
+            for (let k = 0; k < 4; k++) {
+              // Ignore near-zero influences: they drag a joint's radius out to
+              // the far side of the mesh for no visible deformation.
+              if (wgt[i * 4 + k] < 0.05) continue
+              const j = jnt[i * 4 + k]
+              if (j >= joints.length) continue
+              v[0] = pos[i * 3] - positions[j * 3]
+              v[1] = pos[i * 3 + 1] - positions[j * 3 + 1]
+              v[2] = pos[i * 3 + 2] - positions[j * 3 + 2]
+              const d = Math.hypot(v[0], v[1], v[2])
+              if (d > radii[j]) radii[j] = d
+            }
+          }
+        }
+      }
+
+      entry = { positions, radii }
+      jointRadiiCache.set(key, entry)
+      return entry
+    }
+
+    /**
+     * Local bounds of the CURRENT pose, from bone matrices rather than vertices.
+     *
+     * _enabledLocalBounds() is the bind-pose box and is cached, so it cannot
+     * follow an animation that reaches outside the rest pose - a kick, a swing -
+     * and C3 then culls or clips the model. This costs O(joints) per frame
+     * instead of O(vertices) and is conservative, so it never culls early.
+     */
+    _poseLocalBounds() {
+      const gltf = this.gltf?.gltfData
+      if (!gltf || !gltf.skinnedNodes || gltf.skinnedNodes.length === 0) return null
+      const vec3 = globalThis.glMatrix3D.vec3
+      const min = [Infinity, Infinity, Infinity]
+      const max = [-Infinity, -Infinity, -Infinity]
+      const centre = vec3.create()
+      let any = false
+
+      for (const node of gltf.skinnedNodes) {
+        if (node.disabled) continue
+        const radii = this._jointRadii(node.skin)
+        if (!radii) continue
+        const joints = node.skin.joints
+        for (let j = 0; j < joints.length; j++) {
+          const m = joints[j].boneMatrix
+          if (!m) continue
+          centre[0] = radii.positions[j * 3]
+          centre[1] = radii.positions[j * 3 + 1]
+          centre[2] = radii.positions[j * 3 + 2]
+          vec3.transformMat4(centre, centre, m)
+          const sx = Math.hypot(m[0], m[1], m[2])
+          const sy = Math.hypot(m[4], m[5], m[6])
+          const sz = Math.hypot(m[8], m[9], m[10])
+          const r = radii.radii[j] * Math.max(sx, sy, sz)
+          any = true
+          for (let a = 0; a < 3; a++) {
+            if (centre[a] - r < min[a]) min[a] = centre[a] - r
+            if (centre[a] + r > max[a]) max[a] = centre[a] + r
+          }
+        }
+      }
+      return any ? { min, max } : null
+    }
+
     _enabledLocalBounds() {
       if (this._enabledBoundsCache !== undefined) return this._enabledBoundsCache
       const gltf = this.gltf?.gltfData

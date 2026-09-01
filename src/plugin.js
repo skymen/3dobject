@@ -3,7 +3,7 @@
   const SDK = self.SDK
 
   const PLUGIN_ID = "Mikal_3DObject"
-  const PLUGIN_VERSION = "3.0.11"
+  const PLUGIN_VERSION = "3.0.16"
   const PLUGIN_CATEGORY = "3d"
 
   const PLUGIN_CLASS = (SDK.Plugins.Mikal_3DObject = class Object3DPlugin extends SDK.IPluginBase {
@@ -132,6 +132,11 @@
           interpolatable: false,
         }),
         new SDK.PluginProperty("check", "start-hidden", false, {
+          interpolatable: false,
+        }),
+        new SDK.PluginProperty("combo", "static-mesh", {
+          initialValue: "off",
+          items: ["off", "on", "auto"],
           interpolatable: false,
         }),
       ])
