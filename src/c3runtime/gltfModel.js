@@ -9,6 +9,8 @@
  * common case, since glTF often stores them as something other than Uint16.
  */
 const convertedAttributeCache = new WeakMap()
+// Untransformed min/max per POSITION accessor - model data, computed once.
+const sourceBoundsCache = new WeakMap()
 function sharedOrCopy(data, Type) {
   if (data instanceof Type) return data
   let converted = convertedAttributeCache.get(data)
@@ -52,7 +54,6 @@ class GltfModelTop {
 
   async init() {
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
-    await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
     if (this.released) return
     if ("buffers" in this.gltfData) {
       this.gltfData.buffers = null
@@ -657,8 +658,16 @@ class GltfModelTop {
 
         let v = [0, 0, 0]
 
+        // A static mesh is drawn from the immutable source positions with the
+        // node transform as a uniform, so transformedVerts is thrown away. The
+        // only thing the loop still produced was the bounding box, and that is
+        // identical for every instance of the model - so take it from the cached
+        // source bounds instead and skip the walk entirely.
+        const skipCpuVerts = staticGeometry && !gpuSkinning && !this.inst.isEditor && !morphActive
+        if (skipCpuVerts) this._accumulateSourceBounds(posData, node.matrix)
+
         for (let j = 0; j < posData.length / 3; j++) {
-          if (gpuSkinning) continue
+          if (gpuSkinning || skipCpuVerts) continue
           let vin = posData.subarray(j * 3, j * 3 + 3)
           if (morphActive) {
             vin = this.morphTargets(vin, j, morphWeights, morphTargets)
@@ -693,7 +702,7 @@ class GltfModelTop {
           if (gltf.pointBatch != undefined)
             for (let ii = 0; ii < transformedVerts.length; ii++) gltf.pointBatch.push(transformedVerts[ii])
           else {
-            if (transformedVerts.length > 0) drawVerts.push(transformedVerts)
+            if (transformedVerts.length > 0 && !skipCpuVerts) drawVerts.push(transformedVerts)
             // Only need to set once for all the below
             if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
               drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
@@ -795,6 +804,47 @@ class GltfModelTop {
       if (dm.morphTargets && dm.morphTargets.length) return false
     }
     return true
+  }
+
+  /**
+   * Expand the instance bounding box by one primitive's source bounds, put
+   * through the node transform.
+   *
+   * The untransformed min/max of a POSITION accessor is pure model data, so it
+   * is computed once and cached on the accessor array. Transforming the eight
+   * corners is looser than transforming every vertex, but it is conservative -
+   * never smaller - so it cannot cull early.
+   */
+  _accumulateSourceBounds(posData, nodeMatrix) {
+    let bounds = sourceBoundsCache.get(posData)
+    if (!bounds) {
+      const min = [Infinity, Infinity, Infinity]
+      const max = [-Infinity, -Infinity, -Infinity]
+      for (let i = 0, n = posData.length; i < n; i += 3) {
+        for (let a = 0; a < 3; a++) {
+          const c = posData[i + a]
+          if (c < min[a]) min[a] = c
+          if (c > max[a]) max[a] = c
+        }
+      }
+      bounds = { min, max }
+      sourceBoundsCache.set(posData, bounds)
+    }
+
+    const vec3 = globalThis.glMatrix3D.vec3
+    const corner = this._boundsCorner || (this._boundsCorner = vec3.create())
+    const minBB = this.inst.minBB
+    const maxBB = this.inst.maxBB
+    for (let c = 0; c < 8; c++) {
+      corner[0] = (c & 1 ? bounds.max : bounds.min)[0]
+      corner[1] = (c & 2 ? bounds.max : bounds.min)[1]
+      corner[2] = (c & 4 ? bounds.max : bounds.min)[2]
+      vec3.transformMat4(corner, corner, nodeMatrix)
+      for (let a = 0; a < 3; a++) {
+        if (corner[a] < minBB[a]) minBB[a] = corner[a]
+        if (corner[a] > maxBB[a]) maxBB[a] = corner[a]
+      }
+    }
   }
 
   /** True when anything can rewrite this model's vertices between frames. */

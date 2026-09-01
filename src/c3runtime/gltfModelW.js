@@ -274,7 +274,6 @@ class GltfModelWTop {
 
   async init() {
     this.gltfData = this.copyGltfData(this._sdkType.gltfData.gltf)
-    await new Promise((resolve) => setTimeout(resolve, 66)) // Allow time for texture initialization
     if (this.released) return
     if ("buffers" in this.gltfData) {
       this.gltfData.buffers = null
