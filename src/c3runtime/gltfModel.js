@@ -1245,6 +1245,8 @@ class GltfModelTop {
       this.getPolygons(staticGeometry, gpuSkinning)
       this.inst.runtime.UpdateRender()
     }
+    // Applied. See the worker version for why this reports back.
+    return true
   }
 
   lerp(a, b, alpha) {

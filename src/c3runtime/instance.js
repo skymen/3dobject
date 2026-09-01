@@ -297,8 +297,11 @@
           // on. The phase offset only staggers WHICH frame each instance
           // updates on, so it cannot make a timestep uneven.
           if (!throttled || deltaTime >= (1 + this.animationPhase * 0.1) / rate) {
-            this.animationLastTime = this.animationTime
-            this.gltf.updateAnimationPolygons(
+            // Advance only if the update was accepted. Marking it done before
+            // the call meant a request dropped by the worker's in-flight gate
+            // cost a full rate interval before the next attempt, and at high
+            // instance counts the worker is busy most of the time.
+            const applied = this.gltf.updateAnimationPolygons(
               this.animationIndex,
               this.animationTime,
               this.IsOnScreen(),
@@ -306,6 +309,7 @@
               this.staticGeometry,
               this.gpuSkinning
             )
+            if (applied !== false) this.animationLastTime = this.animationTime
           }
           this.renderOnce = false
           // } else if (this.renderOnce || (this.workerAnimation))

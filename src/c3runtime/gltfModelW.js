@@ -1290,8 +1290,17 @@ class GltfModelWTop {
     return names
   }
 
+  /**
+   * Returns whether the update was actually sent.
+   *
+   * Only one message per instance is in flight at a time, so a request that
+   * arrives while the worker is still busy is dropped. The caller must not
+   * treat a dropped request as an update, or it waits a full rate interval
+   * before trying again - at high instance counts the worker is busy most of
+   * the time, so most updates were being lost for an interval each.
+   */
   updateAnimationPolygons(index, time, onScreen, deltaTime, staticGeometry, gpuSkinning = false) {
-    if (!this.workerReady) return
+    if (!this.workerReady) return false
     this.workerReady = false
     this.updateAnimation(index, time, onScreen, deltaTime)
     this.inst.updateBbox = true
@@ -1315,6 +1324,7 @@ class GltfModelWTop {
       { type: "updateAnimationPolygons", data: data, buff: this.buff, buffBones, iid: this._iid },
       buffBones ? [this.buff, buffBones] : [this.buff]
     )
+    return true
   }
 
   updateModelRotate(x, y, z) {
