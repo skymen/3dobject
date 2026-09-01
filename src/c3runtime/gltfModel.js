@@ -11,6 +11,12 @@
 const convertedAttributeCache = new WeakMap()
 // Untransformed min/max per POSITION accessor - model data, computed once.
 const sourceBoundsCache = new WeakMap()
+
+const IDENTITY_MAT4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+function isIdentityMat4(m) {
+  for (let i = 0; i < 16; i++) if (m[i] !== IDENTITY_MAT4[i]) return false
+  return true
+}
 function sharedOrCopy(data, Type) {
   if (data instanceof Type) return data
   let converted = convertedAttributeCache.get(data)
@@ -143,13 +149,14 @@ class GltfModelTop {
    * share one batch rather than costing two flushes each.
    */
   _useDeferred(renderer) {
-    const DeferredBatch = globalThis.DeferredBatch
-    return !!(
-      DeferredBatch &&
-      !this.inst.isEditor &&
-      DeferredBatch.install(renderer) &&
-      DeferredBatch.isEnabled()
-    )
+    // install() is idempotent and the editor flag never changes, so the only
+    // moving part is the kill switch. Re-deriving all of it several times per
+    // instance per frame showed up as 8% of the profile.
+    if (this._deferredInstalled === undefined) {
+      const DeferredBatch = globalThis.DeferredBatch
+      this._deferredInstalled = !!(DeferredBatch && !this.inst.isEditor && DeferredBatch.install(renderer))
+    }
+    return this._deferredInstalled && globalThis.C3_3DOBJECT_DEFERRED !== false
   }
 
   /**
@@ -310,6 +317,10 @@ class GltfModelTop {
         modelRotate: m.mat4.create(),
         rotate: m.quat.create(),
         iModel: m.mat4.create(),
+        pos: [0, 0, 0],
+        scl: [0, 0, 0],
+        // x,y,z | angles | scales | localCenter - NaN so the first frame is a miss
+        xform: new Float64Array(12).fill(NaN),
       }
     }
     const scratch = this._scratch
@@ -346,16 +357,32 @@ class GltfModelTop {
       const xScale = this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)
       const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
       const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
-      const rotate = scratch.rotate
-      quat.fromEuler(rotate, xAngle, yAngle, zAngle)
-      mat4.fromRotationTranslationScaleOrigin(
-        modelRotate,
-        rotate,
-        [x, y, z],
-        [xScale, -yScale, zScale],
-        this.inst.localCenter
-      )
-      mat4.copy(this.modelRotate, modelRotate)
+      // Rebuild the model matrix only when something it depends on moved.
+      // Most instances in a scene are static from frame to frame, and
+      // fromEuler plus fromRotationTranslationScaleOrigin was 4% of the profile
+      // on its own. The two vector arguments are scratch too - they were a pair
+      // of array literals per instance per frame.
+      const lc = this.inst.localCenter
+      const t = scratch.xform
+      const changed =
+        t[0] !== x || t[1] !== y || t[2] !== z ||
+        t[3] !== xAngle || t[4] !== yAngle || t[5] !== zAngle ||
+        t[6] !== xScale || t[7] !== yScale || t[8] !== zScale ||
+        t[9] !== lc[0] || t[10] !== lc[1] || t[11] !== lc[2]
+      if (changed) {
+        t[0] = x; t[1] = y; t[2] = z
+        t[3] = xAngle; t[4] = yAngle; t[5] = zAngle
+        t[6] = xScale; t[7] = yScale; t[8] = zScale
+        t[9] = lc[0]; t[10] = lc[1]; t[11] = lc[2]
+        const pos = scratch.pos
+        pos[0] = x; pos[1] = y; pos[2] = z
+        const scl = scratch.scl
+        scl[0] = xScale; scl[1] = -yScale; scl[2] = zScale
+        const rotate = scratch.rotate
+        quat.fromEuler(rotate, xAngle, yAngle, zAngle)
+        mat4.fromRotationTranslationScaleOrigin(this.modelRotate, rotate, pos, scl, lc)
+      }
+      if (!instanced) mat4.copy(modelRotate, this.modelRotate)
       if (!instanced) {
         mat4.multiply(modelRotate, tmpModelView, modelRotate)
         renderer.SetModelViewMatrix(modelRotate)
@@ -426,10 +453,18 @@ class GltfModelTop {
           if (instanced) {
             // Fold the node transform into the per-instance matrix so a mesh
             // reused by several nodes still shares one buffer and one draw.
-            const nodeXform = objectBuffers[i].usesSourcePositions ? this.drawMeshes[j].nodeXform : null
-            const iModel = scratch.iModel
-            if (nodeXform) mat4.multiply(iModel, this.modelRotate, nodeXform)
-            else mat4.copy(iModel, this.modelRotate)
+            const dm = this.drawMeshes[j]
+            const nodeXform = objectBuffers[i].usesSourcePositions ? dm.nodeXform : null
+            // A single-node prop usually has an identity node matrix, and the
+            // multiply is then pure cost.
+            if (dm._nodeXformIsIdentity === undefined) {
+              dm._nodeXformIsIdentity = nodeXform ? isIdentityMat4(nodeXform) : true
+            }
+            let iModel = this.modelRotate
+            if (!dm._nodeXformIsIdentity) {
+              iModel = scratch.iModel
+              mat4.multiply(iModel, this.modelRotate, nodeXform)
+            }
             objectBuffers[i].addInstance(renderer, iModel, currentColor)
           } else {
             objectBuffers[i].draw(
@@ -623,6 +658,7 @@ class GltfModelTop {
             morphTargets: [],
             morphWeights: null,
             nodeXform: null,
+            _nodeXformIsIdentity: undefined,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)
@@ -745,6 +781,7 @@ class GltfModelTop {
               // Passed to draw() rather than stored on the buffer: a shared
               // buffer has no single owner to hold it for.
               dm.nodeXform = node.matrix
+              dm._nodeXformIsIdentity = undefined
               objectBuffers[0].setNodeXform(node.matrix)
             }
           }
@@ -786,6 +823,7 @@ class GltfModelTop {
    * has the attributes or does not.
    */
   _canInstance(renderer) {
+    if (this._instanceableCache === false) return false
     if (this.inst.isEditor) return false
     if (!this._useDeferred(renderer)) return false
 
@@ -993,6 +1031,7 @@ class GltfModelTop {
             morphTargets: [],
             morphWeights: null,
             nodeXform: null,
+            _nodeXformIsIdentity: undefined,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)

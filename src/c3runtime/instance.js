@@ -47,6 +47,7 @@
       this.totalTriangles = 0
       // The only runtime path. See the constructor note on the deprecated
       // gpu-skinning / static-mesh / worker-animation properties.
+      this._hasAnimationData = false
       this.staticGeometry = true
       this.staticMeshMode = 0
       this.gpuSkinning = true
@@ -145,6 +146,7 @@
           .catch((err) => console.error("[3DObject] texture load failed", err))
       }
 
+      this._hasAnimationData = Object.prototype.hasOwnProperty.call(this.gltf.gltfData, "animations")
       this.loaded = true
       this.renderOnce = true
       this.runtime.UpdateRender()
@@ -241,8 +243,6 @@
     }
 
     Tick() {
-      const onScreen = this.IsOnScreen()
-
       // Detect position changes (x, y, zElevation) and trigger bbox update
       if (this.loaded) {
         const wi = this.GetWorldInfo()
@@ -271,7 +271,7 @@
 
       // Animate gltf model
       if (this.loaded) {
-        if (this.animationPlay && this.gltf.gltfData.hasOwnProperty("animations")) {
+        if (this.animationPlay && this._hasAnimationData) {
           // The action-set rate scaled for distance; identical to animationRate
           // when the distance feature is off or the model is close to the camera.
           const rate = Math.max(this.animationRate * this._GetDistanceRateFactor(), 0.001)
@@ -285,7 +285,7 @@
             this.gltf.updateAnimationPolygons(
               this.animationIndex,
               this.animationTime,
-              onScreen,
+              this.IsOnScreen(),
               deltaTime,
               this.staticGeometry,
               this.gpuSkinning
@@ -364,7 +364,6 @@
         renderer.SetTexture(texture)
       }
 
-      const tempQuad = C3.New(C3.Quad)
       if (this.loaded && this.gltfPath != "path") {
         // Ensure dedicated 3D shader program is ready; if not, kick off creation and skip this frame
         if (!globalThis.cached3DObjectShader) {
@@ -397,7 +396,7 @@
             x,
             y,
             z,
-            tempQuad,
+            null, // tempQuad: unused since the mesh path replaced Quad3D2
             this.sdkType.whiteTexture,
             wi.GetPremultipliedColor(),
             textures,
