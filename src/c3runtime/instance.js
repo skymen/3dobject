@@ -23,6 +23,16 @@
       this.animationSpeed = 1
       this.animationLastTime = 0
       this.animationRate = 60
+      // Whether the project actually asked for a rate. Untouched, the animation
+      // updates every tick: a hardcoded 60 caps it at 60 Hz, so on a 120 Hz
+      // display every second frame repeats a pose and the result looks steppy
+      // no matter how fast the game runs.
+      this.animationRateExplicit = false
+      // Fixed per-instance phase offset. This used to be fresh Math.random()
+      // added to animationTime EVERY tick, which desynchronised instances but
+      // also made each one's timestep uneven - visible as micro-stutter on a
+      // single model. A constant offset desynchronises just as well.
+      this.animationPhase = Math.random()
       // animationRate after the distance factor; readable via the
       // EffectiveAnimationRate expression for tuning the thresholds.
       this.effectiveAnimationRate = 60
@@ -274,13 +284,19 @@
         if (this.animationPlay && this._hasAnimationData) {
           // The action-set rate scaled for distance; identical to animationRate
           // when the distance feature is off or the model is close to the camera.
-          const rate = Math.max(this.animationRate * this._GetDistanceRateFactor(), 0.001)
-          this.effectiveAnimationRate = rate
-          this.animationTime +=
-            this._runtime.GetDt() * this.animationSpeed +
-            (Math.random() * (1 / rate) - 1 / rate / 2) * 0.1
+          const distanceFactor = this._GetDistanceRateFactor()
+          const throttled = this.animationRateExplicit || distanceFactor !== 1
+          const rate = Math.max(this.animationRate * distanceFactor, 0.001)
+          const dt = this._runtime.GetDt()
+          // Report the real update rate: unthrottled that is the frame rate,
+          // not zero, so the expression stays meaningful for tuning.
+          this.effectiveAnimationRate = throttled ? rate : dt > 0 ? 1 / dt : rate
+          this.animationTime += dt * this.animationSpeed
           const deltaTime = this.animationTime - this.animationLastTime
-          if (deltaTime >= 1 / rate) {
+          // Unthrottled unless the project set a rate or distance-based rate is
+          // on. The phase offset only staggers WHICH frame each instance
+          // updates on, so it cannot make a timestep uneven.
+          if (!throttled || deltaTime >= (1 + this.animationPhase * 0.1) / rate) {
             this.animationLastTime = this.animationTime
             this.gltf.updateAnimationPolygons(
               this.animationIndex,

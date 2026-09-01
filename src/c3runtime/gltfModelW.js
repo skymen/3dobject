@@ -482,6 +482,10 @@ class GltfModelWTop {
     this.useSharedWorker = !!this.inst.gpuSkinning
     if (this.useSharedWorker) {
       const sdkType = this._sdkType
+      // One worker per object type. A pool of them was tried and made no
+      // difference, so the worker's own CPU time is not what limits animation
+      // updates at high instance counts - and extra hosts each cost another
+      // full copy of the model data.
       if (!sdkType.animWorkerHost) sdkType.animWorkerHost = new GltfWorkerHostTop()
       const host = sdkType.animWorkerHost
       const port = await host.getPort(runtime)

@@ -45,7 +45,7 @@
             this.gltfData = new globalThis.GltfData(this._runtime, this);
             this.dynamicTexturesLoaded = false;
             this.texture = {};
-            this.animWorkerHost = null; // shared per-type animation worker (GPU skinning)
+            this.animWorkerHost = null; // shared per-type animation worker
         }
 
         async LoadDynamicTextures(renderer, gltfData, textures, whiteTextureOwner)

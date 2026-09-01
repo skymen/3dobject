@@ -55,6 +55,7 @@
     },
     SetAnimationRate(rate) {
       this.animationRate = rate > 0 ? rate : 1
+      this.animationRateExplicit = true
     },
     SetAnimationSpeed(speed) {
       this.animationSpeed = speed
