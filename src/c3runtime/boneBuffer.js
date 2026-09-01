@@ -208,8 +208,17 @@ class BoneBufferTop {
       this.locARootNodeXform = gl.getUniformLocation(shaderProgram, "uRootNodeXform");
     }
 
+    // Raw writes, then invalidate: these must land on every skinned draw, and
+    // the invalidation stops the value cache believing a stale value later.
     if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 1.0); // Enable skinning
-    if (this.locARootNodeXform && this.rootNodeXform) gl.uniformMatrix4fv(this.locARootNodeXform, false, this.rootNodeXform);
+    if (this.locARootNodeXform && this.rootNodeXform) {
+      gl.uniformMatrix4fv(this.locARootNodeXform, false, this.rootNodeXform);
+    }
+    const locInstanced = globalThis.uniformCache.getLocation(gl, shaderProgram, "uInstancedEnable");
+    if (locInstanced) gl.uniform1f(locInstanced, 0.0);
+    globalThis.uniformCache.invalidate(shaderProgram, "uSkinEnable");
+    globalThis.uniformCache.invalidate(shaderProgram, "uRootNodeXform");
+    globalThis.uniformCache.invalidate(shaderProgram, "uInstancedEnable");
   }
 
   uploadUniformsNonSkin(renderer) {
@@ -247,6 +256,12 @@ class BoneBufferTop {
     if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 0.0); // Disable skinning
     if (this.locUNodeXformEnable) gl.uniform1f(this.locUNodeXformEnable, 1.0); // Enable node transform
     if (this.locANodeXform && this.nodeXform) gl.uniformMatrix4fv(this.locANodeXform, false, this.nodeXform);
+    const locInstancedNS = globalThis.uniformCache.getLocation(gl, shaderProgram, "uInstancedEnable");
+    if (locInstancedNS) gl.uniform1f(locInstancedNS, 0.0);
+    globalThis.uniformCache.invalidate(shaderProgram, "uSkinEnable");
+    globalThis.uniformCache.invalidate(shaderProgram, "uNodeXformEnable");
+    globalThis.uniformCache.invalidate(shaderProgram, "uNodeXform");
+    globalThis.uniformCache.invalidate(shaderProgram, "uInstancedEnable");
   }
 
 }

@@ -83,6 +83,21 @@ class UniformLocationCacheClass {
     gl.uniform4f(loc, a, b, c, d)
   }
 
+  /**
+   * Forget the remembered value of a uniform.
+   *
+   * For code that writes a uniform with a raw gl call: the cache would
+   * otherwise still believe the previous value and skip the next cached write
+   * of it, leaving whatever the raw write set.
+   */
+  invalidate(shaderProgram, uniformName) {
+    const programCache = this.cache.get(shaderProgram)
+    if (!programCache) return
+    programCache.delete("__v_" + uniformName)
+    programCache.delete("__m_" + uniformName)
+    programCache.delete("__v4_" + uniformName)
+  }
+
   clearProgram(shaderProgram) {
     this.cache.delete(shaderProgram)
   }

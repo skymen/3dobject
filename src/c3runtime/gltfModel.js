@@ -308,6 +308,7 @@ class GltfModelTop {
         tmpModelView: m.mat4.create(),
         modelRotate: m.mat4.create(),
         rotate: m.quat.create(),
+        iModel: m.mat4.create(),
       }
     }
     const scratch = this._scratch
@@ -333,6 +334,9 @@ class GltfModelTop {
 
     const tmpModelView = scratch.tmpModelView
     const modelRotate = scratch.modelRotate
+    // Instanced draws carry the model matrix as a vertex attribute, so none of
+    // the per-instance SetModelViewMatrix / uModelRotate work below is needed.
+    const instanced = this._canInstance(renderer)
     if (!this.inst.isEditor) {
       mat4.copy(tmpModelView, renderer._matMV)
       const xAngle = this.inst.xAngle
@@ -351,9 +355,11 @@ class GltfModelTop {
         this.inst.localCenter
       )
       mat4.copy(this.modelRotate, modelRotate)
-      mat4.multiply(modelRotate, tmpModelView, modelRotate)
-      renderer.SetModelViewMatrix(modelRotate)
-      this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
+      if (!instanced) {
+        mat4.multiply(modelRotate, tmpModelView, modelRotate)
+        renderer.SetModelViewMatrix(modelRotate)
+        this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
+      }
     }
 
     // Default color - no longer set via renderer, will be passed via uniforms
@@ -416,14 +422,24 @@ class GltfModelTop {
         for (let i = 0; i < objectBuffers.length; i++) {
           instanceBoneBuffer = this.drawMeshes[j]?.boneBuffer
 
-          objectBuffers[i].draw(
-            renderer,
-            instanceBoneBuffer,
-            this._sdkType.gltfData,
-            currentColor, // Pass calculated color to draw method
-            this.drawMeshes[j].morphWeights,
-            objectBuffers[i].usesSourcePositions ? this.drawMeshes[j].nodeXform : null
-          )
+          if (instanced) {
+            // Fold the node transform into the per-instance matrix so a mesh
+            // reused by several nodes still shares one buffer and one draw.
+            const nodeXform = objectBuffers[i].usesSourcePositions ? this.drawMeshes[j].nodeXform : null
+            const iModel = scratch.iModel
+            if (nodeXform) mat4.multiply(iModel, this.modelRotate, nodeXform)
+            else mat4.copy(iModel, this.modelRotate)
+            objectBuffers[i].addInstance(renderer, iModel, currentColor)
+          } else {
+            objectBuffers[i].draw(
+              renderer,
+              instanceBoneBuffer,
+              this._sdkType.gltfData,
+              currentColor, // Pass calculated color to draw method
+              this.drawMeshes[j].morphWeights,
+              objectBuffers[i].usesSourcePositions ? this.drawMeshes[j].nodeXform : null
+            )
+          }
           totalTriangles += objectBuffers[i].indexDataLength / 3
         }
         // XXX Perhaps too often, once per mesh, better to do once per model
@@ -443,7 +459,7 @@ class GltfModelTop {
     }
 
     // Restore modelview matrix
-    if (!this.inst.isEditor) {
+    if (!this.inst.isEditor && !instanced) {
       renderer.SetModelViewMatrix(tmpModelView)
     }
     this.inst.totalTriangles = totalTriangles
@@ -452,7 +468,10 @@ class GltfModelTop {
     renderer._texcoordData = rendererTexcoordData
 
     if (!this.inst.isEditor) {
-      if (this._useDeferred(renderer)) {
+      if (instanced) {
+        // The instanced group binds and unbinds its own VAO and touches no
+        // shared attribute state, so there is nothing per instance to undo.
+      } else if (this._useDeferred(renderer)) {
         // One job for all of it. Every queued job costs a switch and a call at
         // flush time, and with hundreds of models on screen the per-instance
         // job count is worth keeping down.
@@ -744,6 +763,40 @@ class GltfModelTop {
    * every instance, re-running the whole node walk and per-vertex transform. In
    * the editor the result only changes when the instance transform does.
    */
+  /**
+   * True when this instance's meshes can go through the instanced path.
+   *
+   * Requires static GPU buffers with no per-instance vertex state: no skinning
+   * (bone matrices are per-instance uniforms) and no morph targets (weights are
+   * too). The shader check runs once - the program is created once and either
+   * has the attributes or does not.
+   */
+  _canInstance(renderer) {
+    if (this.inst.isEditor || !this.inst.staticGeometry || this.inst.gpuSkinning) return false
+    if (!this._useDeferred(renderer)) return false
+
+    if (ObjectBuffer.instancingSupported === undefined) {
+      const gl = renderer._gl
+      const shader = globalThis.cached3DObjectShader
+      const prog = shader && shader._shaderProgram
+      ObjectBuffer.instancingSupported = !!(
+        gl &&
+        prog &&
+        typeof gl.drawElementsInstanced === "function" &&
+        gl.getAttribLocation(prog, "aIModel") !== -1 &&
+        gl.getAttribLocation(prog, "aIColor") !== -1
+      )
+    }
+    if (!ObjectBuffer.instancingSupported) return false
+
+    for (let j = 0; j <= this.drawMeshesIndex; j++) {
+      const dm = this.drawMeshes[j]
+      if (dm.boneBuffer) return false
+      if (dm.morphTargets && dm.morphTargets.length) return false
+    }
+    return true
+  }
+
   /** True when anything can rewrite this model's vertices between frames. */
   _hasAnimations() {
     const anims = this.gltfData && this.gltfData.animations

@@ -40,6 +40,11 @@ class ObjectBufferTop {
     // Morph deltas are shared model data; weights arrive per instance at draw time.
     this.morphTargets = mesh.morphTargets ? mesh.morphTargets[primitiveIndex] : null
     this.morphVertexCount = vertexData ? vertexData.length / 3 : 0
+    this.instanceBuffer = null
+    this.canInstance = false
+    this._instanceData = null
+    this._instanceCount = 0
+    this._groupQueued = false
     this.indexDataLength = indexData.length
     this.vertexData = vertexData
     this.texcoordData = texcoordData
@@ -300,6 +305,25 @@ class ObjectBufferTop {
       gl.enableVertexAttribArray(locAJoints)
     }
 
+    // Per-instance attributes: mat4 model matrix as four vec4s, then the tint.
+    // Divisor 1 means they advance once per instance rather than per vertex.
+    const locIModel = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aIModel")
+    const locIColor = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aIColor")
+    this.canInstance = locIModel !== -1 && locIColor !== -1 && !this.gpuSkinning
+    if (this.canInstance) {
+      if (!this.instanceBuffer) this.instanceBuffer = gl.createBuffer()
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
+      const stride = ObjectBufferTop.INSTANCE_FLOATS * 4
+      for (let i = 0; i < 4; i++) {
+        gl.vertexAttribPointer(locIModel + i, 4, gl.FLOAT, false, stride, i * 16)
+        gl.enableVertexAttribArray(locIModel + i)
+        gl.vertexAttribDivisor(locIModel + i, 1)
+      }
+      gl.vertexAttribPointer(locIColor, 4, gl.FLOAT, false, stride, 64)
+      gl.enableVertexAttribArray(locIColor)
+      gl.vertexAttribDivisor(locIColor, 1)
+    }
+
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer)
 
     gl.bindVertexArray(null)
@@ -381,7 +405,10 @@ class ObjectBufferTop {
       this.vao = this.createVao(renderer); // also resolves the color uniform locations
     }
     // Set color uniforms for 3DObject compatibility
-    this._setColorUniforms(gl, instanceColor, renderer._batchState.currentShader._shaderProgram);
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram;
+    // A group of instanced draws may have run just before this one.
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uInstancedEnable", 0.0);
+    this._setColorUniforms(gl, instanceColor, shaderProgram);
     this._uploadMorphUniforms(renderer, morphWeights);
     gl.bindVertexArray(this.vao);
 
@@ -596,6 +623,77 @@ class ObjectBufferTop {
     this.nodeXform = nodeXform
   }
 
+  /**
+   * Queue one instance of this mesh for an instanced draw.
+   *
+   * The per-instance model matrix (with the node transform already folded in)
+   * and tint are appended to a growable array. The first instance of a batch
+   * also queues the single deferred job that will draw the whole group, so the
+   * group renders at that point in C3's command list.
+   *
+   * The job clears the group when it runs, so a mid-frame EndBatch simply draws
+   * what has accumulated and the next instance starts a fresh group. That is why
+   * this needs no frame hook.
+   */
+  addInstance(renderer, modelMatrix, instanceColor) {
+    const FLOATS = ObjectBufferTop.INSTANCE_FLOATS
+    let data = this._instanceData
+    const need = (this._instanceCount + 1) * FLOATS
+    if (!data || data.length < need) {
+      const grown = new Float32Array(Math.max(need, data ? data.length * 2 : 64 * FLOATS))
+      if (data) grown.set(data)
+      data = this._instanceData = grown
+    }
+    const at = this._instanceCount * FLOATS
+    data.set(modelMatrix, at)
+    if (instanceColor && instanceColor.length >= 4) {
+      data[at + 16] = instanceColor[0]
+      data[at + 17] = instanceColor[1]
+      data[at + 18] = instanceColor[2]
+      data[at + 19] = instanceColor[3]
+    } else {
+      data[at + 16] = data[at + 17] = data[at + 18] = data[at + 19] = 1
+    }
+    this._instanceCount++
+
+    if (!this._groupQueued) {
+      this._groupQueued = true
+      globalThis.DeferredBatch.push(renderer, ObjectBufferTop.prototype._drawInstancedNow, this, renderer)
+    }
+  }
+
+  /** Upload the accumulated instances and draw them all in one call. */
+  _drawInstancedNow(renderer) {
+    this._groupQueued = false
+    const count = this._instanceCount
+    this._instanceCount = 0
+    if (count === 0) return
+
+    const gl = renderer._gl
+    if (this.vao === null) this.vao = this.createVao(renderer)
+
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram
+    const uc = globalThis.uniformCache
+    uc.setFloat(gl, shaderProgram, "uInstancedEnable", 1.0)
+    uc.setFloat(gl, shaderProgram, "uSkinEnable", 0.0)
+    uc.setFloat(gl, shaderProgram, "uNodeXformEnable", 0.0)
+    uc.setFloat(gl, shaderProgram, "uModelRotateEnable", 0.0)
+    uc.setFloat(gl, shaderProgram, "uHasVertexColors", this.hasVertexColors ? 1.0 : 0.0)
+
+    gl.bindVertexArray(this.vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      this._instanceData.subarray(0, count * ObjectBufferTop.INSTANCE_FLOATS),
+      gl.DYNAMIC_DRAW
+    )
+    gl.drawElementsInstanced(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0, count)
+    gl.bindVertexArray(null)
+
+    // Leave the flag off so the non-instanced paths are unaffected.
+    uc.setFloat(gl, shaderProgram, "uInstancedEnable", 0.0)
+  }
+
   /** Node transform for an unskinned mesh drawn from untransformed positions. */
   _uploadNodeXform(renderer, nodeXform) {
     const gl = renderer._gl
@@ -695,6 +793,8 @@ ObjectBufferTop._warnedSharedNodeXform = false
  * `created` should stay in the single digits.
  */
 // C3 uses texture units 0 and 1, so sit clear of both.
+// mat4 model matrix (16) + rgba tint (4) per instance.
+ObjectBufferTop.INSTANCE_FLOATS = 20
 ObjectBufferTop.MORPH_TEXTURE_UNIT = 4
 // Must match MAX_MORPH in the vertex shader (plugin.js).
 ObjectBufferTop.MAX_MORPH = 32
