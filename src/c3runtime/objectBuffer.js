@@ -15,6 +15,10 @@ class ObjectBufferTop {
     this._shareKey = null
     this.maxJointIndexUsed = mesh.maxJointIndexUsed ?? -1; // Store max index used by this mesh primitive
     this.gpuSkinning = gpuSkinning
+    // Whether THIS primitive is skinned, which is not the same as the instance
+    // being on the GPU path - every instance is now. A static prop inside an
+    // otherwise skinned model has no joints or weights.
+    this.isSkinned = false
 
     let vertexData, texcoordData, indexData, colorData, normalData, weightsData, jointsData
     // Prefer the untransformed source positions. The node transform then rides
@@ -45,6 +49,7 @@ class ObjectBufferTop {
     this._instanceData = null
     this._instanceCount = 0
     this._groupQueued = false
+    this.isSkinned = !!(weightsData && jointsData)
     this.indexDataLength = indexData.length
     this.vertexData = vertexData
     this.texcoordData = texcoordData
@@ -200,17 +205,13 @@ class ObjectBufferTop {
     if (!mesh.drawVertsOrig || !mesh.drawVertsOrig[primitiveIndex]) return false
     if (!mesh.drawIndices || !mesh.drawIndices[primitiveIndex]) return false
 
-    if (gpuSkinning) {
-      // Deformation is bone uniforms; the base mesh never changes.
-      return !!(
-        mesh.drawWeights && mesh.drawWeights[primitiveIndex] && mesh.drawJoints && mesh.drawJoints[primitiveIndex]
-      )
-    }
+    // Skinned: deformation is bone uniforms, the base mesh never changes.
+    const skinned = !!(
+      mesh.drawWeights && mesh.drawWeights[primitiveIndex] && mesh.drawJoints && mesh.drawJoints[primitiveIndex]
+    )
+    if (skinned) return true
 
     // Unskinned: shareable exactly when nothing rewrites the vertices per frame.
-    // CPU-animated meshes recompute transformedVerts every frame from an
-    // animated node matrix, and two instances at different animation times hold
-    // genuinely different geometry.
     return !hasAnimations
   }
 
@@ -309,7 +310,7 @@ class ObjectBufferTop {
     // Divisor 1 means they advance once per instance rather than per vertex.
     const locIModel = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aIModel")
     const locIColor = globalThis.uniformCache.getAttributeLocation(gl, shaderProgram, "aIColor")
-    this.canInstance = locIModel !== -1 && locIColor !== -1 && !this.gpuSkinning
+    this.canInstance = locIModel !== -1 && locIColor !== -1 && !this.isSkinned
     if (this.canInstance) {
       if (!this.instanceBuffer) this.instanceBuffer = gl.createBuffer()
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
@@ -466,7 +467,7 @@ class ObjectBufferTop {
 
         // Upload node transform if not handled by a BoneBuffer instance (non-skinned path)
         if (!nodeXformUploadedByBoneBuffer) {
-            if (this.gpuSkinning) {
+            if (this.isSkinned) {
               this.uploadNodeXformUniforms(renderer);
             } else if (nodeXform) {
               this._uploadNodeXform(renderer, nodeXform);

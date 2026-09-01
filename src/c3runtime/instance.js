@@ -45,9 +45,11 @@
       this.bboxScale = 1
       this.animationNameFinished = ""
       this.totalTriangles = 0
-      this.staticGeometry = false
+      // The only runtime path. See the constructor note on the deprecated
+      // gpu-skinning / static-mesh / worker-animation properties.
+      this.staticGeometry = true
       this.staticMeshMode = 0
-      this.gpuSkinning = false
+      this.gpuSkinning = true
       // Distance-based animation rate. See _GetDistanceRateFactor().
       this.distanceRate = false
       this.distanceRateMinDist = 1024
@@ -90,22 +92,23 @@
         this.xScale = properties[11]
         this.yScale = properties[12]
         this.zScale = properties[13]
+        // gpu-skinning (18) and cpu-xform (16) are deprecated no-ops: skinning,
+        // morph targets and the bounding box are all GPU-side now, so there is
+        // no second path to select between. worker-animation is NOT one of
+        // them - the worker also runs keyframe sampling and the scene-graph
+        // update, which are still real per-frame work worth keeping off the
+        // main thread whatever does the skinning.
         this.workerAnimation = properties[15]
         this.useBoneBoundingBox = properties[17] !== false // Default to true
-        if (properties[18] === true) {
-          // GPU skinning known at creation: bones-only worker payload, static geometry path
-          this.gpuSkinning = true
-          this.staticGeometry = true
-        }
         this.distanceRate = properties[19] === true
         this.distanceRateMinDist = properties[20]
         this.distanceRateMaxDist = properties[21]
         this.distanceRateMinRate = properties[22]
         this.distanceRateMaxRate = properties[23]
         this.startHidden = properties[24] === true
-        // 0 = off, 1 = on, 2 = auto (resolved in doInit once animations are known)
+        // static-mesh (25) is likewise a no-op: the GPU buffer path is the only
+        // path now.
         this.staticMeshMode = properties[25] || 0
-        if (this.staticMeshMode === 1) this.staticGeometry = true
       }
 
       this.localCenter = [0, 0, 0]
@@ -140,10 +143,6 @@
         this.sdkType
           .LoadDynamicTextures(this.renderer, this.sdkType.gltfData, this.sdkType.texture, this.sdkType)
           .catch((err) => console.error("[3DObject] texture load failed", err))
-      }
-
-      if (this.staticMeshMode === 2) {
-        this.staticGeometry = this.gltf.getAnimationNames().length === 0
       }
 
       this.loaded = true

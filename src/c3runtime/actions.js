@@ -182,19 +182,10 @@
 
 
 
-    SetStaticGeometry(enable) {
-      this.staticGeometry = enable
-      if (enable) {
-        this.renderOnce = true
-      }
-    },
-    SetGPUSkinning(enable) {
-      this.staticGeometry = enable
-      this.gpuSkinning = enable
-      if (enable) {
-        this.renderOnce = true
-      }
-    },
+    // Deprecated no-ops. The GPU buffer path is the only path, so there is
+    // nothing left to switch. Kept so existing projects still load.
+    SetStaticGeometry(enable) {},
+    SetGPUSkinning(enable) {},
   }
 }
 

@@ -443,10 +443,11 @@ class GltfModelTop {
           }
           totalTriangles += objectBuffers[i].indexDataLength / 3
         }
-        // XXX Perhaps too often, once per mesh, better to do once per model
-        if (instanceBoneBuffer) {
-          instanceBoneBuffer.disable(renderer)
-        }
+        // There was an instanceBoneBuffer.disable(renderer) call here, but
+        // BoneBuffer has never had a disable method - it only became reachable
+        // once every model started taking the buffer path. Nothing needs it:
+        // _disableGPUSkinning in _drawNow and the instanced path both clear
+        // uSkinEnable before an unskinned mesh draws.
         continue
       }
 
@@ -663,11 +664,15 @@ class GltfModelTop {
         // only thing the loop still produced was the bounding box, and that is
         // identical for every instance of the model - so take it from the cached
         // source bounds instead and skip the walk entirely.
-        const skipCpuVerts = staticGeometry && !gpuSkinning && !this.inst.isEditor && !morphActive
+        // Runtime never needs CPU vertices any more: skinning, morphs and the
+        // bounding box are all GPU-side or derived from cached source bounds.
+        // The editor is the exception - its renderer has no GL access, so it
+        // still walks vertices and draws them with DrawMesh.
+        const skipCpuVerts = !this.inst.isEditor
         if (skipCpuVerts) this._accumulateSourceBounds(posData, node.matrix)
 
         for (let j = 0; j < posData.length / 3; j++) {
-          if (gpuSkinning || skipCpuVerts) continue
+          if (skipCpuVerts) continue
           let vin = posData.subarray(j * 3, j * 3 + 3)
           if (morphActive) {
             vin = this.morphTargets(vin, j, morphWeights, morphTargets)
@@ -781,7 +786,7 @@ class GltfModelTop {
    * has the attributes or does not.
    */
   _canInstance(renderer) {
-    if (this.inst.isEditor || !this.inst.staticGeometry || this.inst.gpuSkinning) return false
+    if (this.inst.isEditor) return false
     if (!this._useDeferred(renderer)) return false
 
     if (ObjectBuffer.instancingSupported === undefined) {
@@ -798,12 +803,20 @@ class GltfModelTop {
     }
     if (!ObjectBuffer.instancingSupported) return false
 
-    for (let j = 0; j <= this.drawMeshesIndex; j++) {
-      const dm = this.drawMeshes[j]
-      if (dm.boneBuffer) return false
-      if (dm.morphTargets && dm.morphTargets.length) return false
+    // Walking every drawMesh on every render() of every instance showed up in
+    // the profile; the answer only changes when getPolygons rebuilds the list.
+    if (this._instanceableCache === undefined) {
+      let ok = true
+      for (let j = 0; j <= this.drawMeshesIndex; j++) {
+        const dm = this.drawMeshes[j]
+        if (dm.boneBuffer || (dm.morphTargets && dm.morphTargets.length)) {
+          ok = false
+          break
+        }
+      }
+      this._instanceableCache = ok
     }
-    return true
+    return this._instanceableCache
   }
 
   /**
@@ -867,6 +880,7 @@ class GltfModelTop {
   }
 
   getPolygons(staticGeometry = false, gpuSkinning = false) {
+    this._instanceableCache = undefined
     if (this.inst.isEditor) {
       const sig = this._editorPolygonSignature()
       if (sig === this._editorPolySig) return
@@ -1021,8 +1035,6 @@ class GltfModelTop {
         if (gpuSkinning) drawBones.length = 0
 
         let posData = node.mesh.primitives[i].attributes.POSITION.data
-        let weights = node.mesh.primitives[i].attributes.WEIGHTS_0.data
-        let joints = node.mesh.primitives[i].attributes.JOINTS_0.data
         // Reuse the per-mesh output array instead of allocating every tick
         const skinnedDrawMesh = this.drawMeshes[this.drawMeshesIndex]
         let transformedVerts = skinnedDrawMesh._transformedVerts
@@ -1030,26 +1042,25 @@ class GltfModelTop {
           transformedVerts = skinnedDrawMesh._transformedVerts = new Float32Array(posData.length)
         }
 
+        // No CPU skinning anywhere. The editor has no animation preview, so it
+        // only ever draws the bind pose, and there the weighted bone blend
+        // collapses to a single matrix: every joint's boneMatrix is
+        //     node.invMatrix * joint.matrix * joint.invBindMatrix
+        // and in bind pose joint.matrix is the inverse of invBindMatrix, so
+        // those two cancel and every bone contributes node.invMatrix. Weights
+        // sum to 1 by the glTF spec, so the blend is just that one multiply -
+        // identical output, no weights, no joints, no per-bone loop.
+        const bindMatrix = node.invMatrix
         for (let j = 0; j < posData.length / 3; j++) {
-          if (gpuSkinning) continue
-          let w = weights.subarray(j * 4, j * 4 + 4)
-          let b = joints.subarray(j * 4, j * 4 + 4)
+          if (!this.inst.isEditor) continue
           let vin = posData.subarray(j * 3, j * 3 + 3)
-          let v = [0, 0, 0],
-            vsum = [0, 0, 0]
+          const vsum = [0, 0, 0]
 
           if (morphActive) {
             vin = this.morphTargets(vin, j, morphWeights, morphTargets)
           }
 
-          for (let i = 0; i < 4; i++) {
-            vec3.transformMat4(v, vin, node.skin.joints[b[i]].boneMatrix)
-            // mat4.multiplyVec3(node.skin.joints[b[i]].boneMatrix, vin, v);
-            vec3.scale(v, v, w[i])
-            // vec3.scale(v, w[i]);
-            vec3.add(vsum, vsum, v)
-            // vec3.add(vsum, v);
-          }
+          vec3.transformMat4(vsum, vin, bindMatrix)
 
           if (rootNodeXform) {
             // vec3.mul(vsum, vsum, rootNode.scale);
