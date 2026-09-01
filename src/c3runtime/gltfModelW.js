@@ -1,5 +1,24 @@
 // @ts-check
 "use strict"
+
+/**
+ * Attribute data is immutable and shared between instances, so a conversion
+ * must be memoised on the source array: ObjectBuffer.acquire keys its share
+ * cache on array IDENTITY, and minting a fresh copy per instance makes every
+ * instance miss the cache and allocate its own GL buffers. Indices are the
+ * common case, since glTF often stores them as something other than Uint16.
+ */
+const convertedAttributeCache = new WeakMap()
+function sharedOrCopy(data, Type) {
+  if (data instanceof Type) return data
+  let converted = convertedAttributeCache.get(data)
+  if (!converted) {
+    converted = new Type(data)
+    convertedAttributeCache.set(data, converted)
+  }
+  return converted
+}
+
 // @ts-ignore
 const BoneBufferW = globalThis.BoneBuffer
 // @ts-ignore
@@ -355,9 +374,6 @@ class GltfModelWTop {
         const drawWeights = this.drawMeshes[this.drawMeshesIndex].drawWeights
         const drawVertsOrig = this.drawMeshes[this.drawMeshesIndex].drawVertsOrig
 
-        // Attribute data is immutable and shared across instances; only copy when a
-        // type conversion is actually needed
-        const sharedOrCopy = (data, Type) => (data instanceof Type ? data : new Type(data))
         if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
           drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
         }
@@ -688,6 +704,46 @@ class GltfModelWTop {
   }
 
   /** Point C3's vertex/texcoord attributes back at C3's own buffers. */
+  /**
+   * Draw one primitive as a single batched mesh. See gltfModel.js for why the
+   * positions need a copy: Quad3D2 folds in baseZ + currentZ itself, DrawMesh
+   * takes absolute positions.
+   */
+  _drawMesh(renderer, drawMesh, index, positions, uvs, indices, z) {
+    const zBase = this.inst.isEditor
+      ? renderer.GetCurrentZ()
+      : renderer.GetBaseZ() + renderer.GetCurrentZ()
+    const zShift = zBase - z
+
+    if (!drawMesh._drawPos) drawMesh._drawPos = []
+    let pos = drawMesh._drawPos[index]
+    if (!pos || pos.length !== positions.length) {
+      pos = drawMesh._drawPos[index] = new Float32Array(positions.length)
+    }
+    for (let i = 0, n = positions.length; i < n; i += 3) {
+      pos[i] = positions[i]
+      pos[i + 1] = positions[i + 1]
+      pos[i + 2] = positions[i + 2] + zShift
+    }
+
+    let tex = uvs
+    if (!tex || tex.length * 3 !== positions.length * 2) {
+      if (!drawMesh._drawUV) drawMesh._drawUV = []
+      const need = (positions.length / 3) * 2
+      tex = drawMesh._drawUV[index]
+      if (!tex || tex.length !== need) tex = drawMesh._drawUV[index] = new Float32Array(need)
+    }
+
+    const MAX_INDICES = 393210
+    if (indices.length <= MAX_INDICES) {
+      renderer.DrawMesh(pos, tex, indices)
+      return
+    }
+    for (let start = 0; start < indices.length; start += MAX_INDICES) {
+      renderer.DrawMesh(pos, tex, indices.subarray(start, Math.min(start + MAX_INDICES, indices.length)))
+    }
+  }
+
   _restoreC3Attribs(renderer) {
     const gl = renderer._gl
     const batchState = renderer._batchState
@@ -895,51 +951,11 @@ class GltfModelWTop {
         continue
       }
 
+      const drawMesh = this.drawMeshes[j]
       for (let ii = 0; ii < drawVerts.length; ii++) {
-        let v = xVerts[ii]
-        let uv = drawUVs[ii]
-        let ind = drawIndices[ii]
-
-        let triangleCount = ind.length / 3
-        let center = [0, 0, 0]
-        totalTriangles += triangleCount
-        for (let i = 0; i < triangleCount; i++) {
-          if (hasTexture) {
-            {
-              tempQuad.set(
-                uv[ind[i * 3 + 0] * 2 + 0],
-                uv[ind[i * 3 + 0] * 2 + 1],
-                uv[ind[i * 3 + 1] * 2 + 0],
-                uv[ind[i * 3 + 1] * 2 + 1],
-                uv[ind[i * 3 + 2] * 2 + 0],
-                uv[ind[i * 3 + 2] * 2 + 1],
-                uv[ind[i * 3 + 2] * 2 + 0],
-                uv[ind[i * 3 + 2] * 2 + 1]
-              )
-            }
-          } else {
-            // Set face to color if possible
-            tempQuad.set(0, 0, 1, 0, 0, 1, 0, 1)
-          }
-
-          let i3 = i * 3
-          let x0, y0, z0, x1, y1, z1, x2, y2, z2
-
-          x0 = v[ind[i3 + 0] * 3 + 0]
-          y0 = v[ind[i3 + 0] * 3 + 1]
-          z0 = v[ind[i3 + 0] * 3 + 2] - z
-          x1 = v[ind[i3 + 1] * 3 + 0]
-          y1 = v[ind[i3 + 1] * 3 + 1]
-          z1 = v[ind[i3 + 1] * 3 + 2] - z
-          x2 = v[ind[i3 + 2] * 3 + 0]
-          y2 = v[ind[i3 + 2] * 3 + 1]
-          z2 = v[ind[i3 + 2] * 3 + 2] - z
-
-
-          {
-            renderer.Quad3D2(x0, y0, z0, x1, y1, z1, x2, y2, z2, x2, y2, z2, tempQuad)
-          }
-        }
+        const ind = drawIndices[ii]
+        totalTriangles += ind.length / 3
+        this._drawMesh(renderer, drawMesh, ii, xVerts[ii], hasTexture ? drawUVs[ii] : null, ind, z)
       }
     }
 
@@ -1084,7 +1100,32 @@ class GltfModelWTop {
       for (let i = 0; i < node.children.length; i++) this.transformNode(node.children[i], staticGeometry, gpuSkinning)
   }
 
+  /**
+   * Identity of everything the editor's polygon walk depends on.
+   *
+   * The layout view redraws constantly and called getPolygons() every frame for
+   * every instance, re-running the whole node walk and per-vertex transform. In
+   * the editor the result only changes when the instance transform does.
+   */
+  _editorPolygonSignature() {
+    const inst = this.inst
+    const wi = inst._inst
+    const mk = globalThis.mikal3deditor
+    const viewRotate = mk && mk.enable ? mk.viewRotate : null
+    return (
+      wi.GetX() + "|" + wi.GetY() + "|" + wi.GetZElevation() + "|" +
+      inst.xAngle + "|" + inst.yAngle + "|" + inst.zAngle + "|" +
+      inst.scale + "|" + inst.xScale + "|" + inst.yScale + "|" + inst.zScale +
+      (viewRotate ? "|" + viewRotate.join(",") : "")
+    )
+  }
+
   getPolygons(staticGeometry) {
+    if (this.inst.isEditor) {
+      const sig = this._editorPolygonSignature()
+      if (sig === this._editorPolySig) return
+      this._editorPolySig = sig
+    }
     if (!this.workerReady) return
     const editorData = this.getPolygonsPrep(staticGeometry, this.inst.gpuSkinning)
     const data = { editorData }

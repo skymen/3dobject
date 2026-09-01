@@ -104,131 +104,143 @@
       this.drawUVs = []
       this.drawIndices = []
       this.gltf.getPolygons()
-      this.layoutView.Refresh()
     }
 
-    async Draw(iRenderer, iDrawParams) {
-      if (this.loadFailed) return
+    /**
+     * Load the model. Kicked off from Draw but never awaited by it: the editor
+     * declares Draw as returning void and calls it bare, so anything after an
+     * await would issue its draw calls outside the editor's draw pass.
+     */
+    async _startLoad(iRenderer) {
+      if (this._loading || this.loaded || this.loadFailed) return
+      this._loading = true
 
-      if (!this.layoutView) this.layoutView = iDrawParams.GetLayoutView()
-      const texture = this.GetTexture()
+      const sdkType = this.sdkType
+      const gltfData = this.instanceModel ? this.gltfData : sdkType.gltfData
+      const textures = this.instanceModel ? this.texture : sdkType.texture
+      const whiteTextureOwner = this.instanceModel ? this : sdkType
 
-      if (texture) {
-        this._inst.ApplyBlendMode(iRenderer)
-        if (this.sdkType.texture && !this.instanceTexture) {
-          // iRenderer.SetTexture(this.sdkType.texture);
-        } else {
-          iRenderer.SetTexture(texture)
-        }
-
-        iRenderer.SetColor(this._inst.GetColor())
-
-        if (!this.scale) this.scale = this._inst.GetPropertyValue("scale")
-
-        this.gltfPath = this._inst.GetPropertyValue("gtlf-path")
-
-        const sdkType = this.sdkType
-
-        // Initialization, once per group of instances unless model data specified per instance
-        if (this.instanceModel && this.gltfData == null) {
-          this.gltfData = new globalThis.GltfData(this._runtime, this)
-        }
-
-        let textures = this.instanceModel ? this.texture : this.sdkType.texture
-        let whiteTextureOwner = this.instanceModel ? this : this.sdkType
-        let gltfData = this.instanceModel ? this.gltfData : this.sdkType.gltfData
-
-        if (this.instanceModel && this.gltfPath != "path" && this.gltfPath != "" && !this.gltfDataLoad) {
-          this.gltfDataLoad = true
-          const result = await gltfData.load(this.gltfPath, false, this.debug)
-          if (!result) {
-            this.loadFailed = true
-            this.gltfDataLoad = false
-            return
-          }
-          await this.sdkType.LoadDynamicTextures(iRenderer, gltfData, textures, whiteTextureOwner, this.instanceModel)
-        }
-
-        if (!this.instanceModel && this.gltfPath != "path" && this.gltfPath != "" && sdkType.initOwner == -1) {
-          sdkType.initOwner = this.uid
-          const result = await gltfData.load(this.gltfPath, false, this.debug)
-          if (!result) {
-            sdkType.initOwner = -1
-            this.loadFailed = true
-            return
-          }
-          await this.sdkType.LoadDynamicTextures(iRenderer, gltfData, textures, whiteTextureOwner, this.instanceModel)
-        }
-
-        if (!this.loaded) {
-          if ((!this.instanceModel && this.sdkType.dataLoaded) || (this.instanceModel && this.dataLoaded)) {
-            if (!this.doingInit) {
-              this.doingInit = true
-              this.doInit()
-            }
-          }
-          this.layoutView.Refresh()
-        }
-
-        if (this.loaded) {
-          if (textures.length === 0 || !this.instanceTexture) {
-            iRenderer.SetTexture(texture)
-          }
-
-          // 3D Model
-          const x = this._inst.GetX()
-          const y = this._inst.GetY()
-          const z = this._inst.GetZElevation()
-
-          const tempQuad = new SDK.Quad()
-
-          if (this.loaded && this.gtlfPath != "path") {
-            this.drawVerts = []
-            this.drawUVs = []
-            this.drawIndices = []
-            this.gltf.getPolygons()
-            this.gltf.render(
-              iRenderer,
-              x,
-              y,
-              z,
-              tempQuad,
-              whiteTextureOwner.whiteTexture,
-              this._inst.GetColor(),
-              textures,
-              1 // opacity
-            )
-            // this.layoutView.Refresh();
-            if (
-              this.maxBB[0] != Number.POSITIVE_INFINITY &&
-              this.minBB[0] != Number.NEGATIVE_INFINITY &&
-              this.maxBB[1] != Number.POSITIVE_INFINITY &&
-              this.minBB[1] != Number.NEGATIVE_INFINITY
-            ) {
-              const wi = this._inst
-              let width = this.maxBB[0] - this.minBB[0]
-              let height = this.maxBB[1] - this.minBB[1]
-              height = height == 0 ? 1 : height
-              width = width == 0 ? 1 : width
-              wi.SetSize(width, height)
-              wi.SetOriginX(-(this.minBB[0] - x) / width)
-              wi.SetOriginY(-(this.minBB[1] - y) / height)
-            }
-            // wi.SetOriginX((0-this.minBB[0])/(this.maxBB[0]-this.minBB[0]));
-          } else {
-            return
-          }
-        }
-      } else {
-        // render placeholder
-        iRenderer.SetAlphaBlend()
-        iRenderer.SetColorFillMode()
-
-        if (this.HadTextureError()) iRenderer.SetColorRgba(0.25, 0, 0, 0.25)
-        else iRenderer.SetColorRgba(0, 0, 0.5, 0.5)
-
-        iRenderer.Quad(this._inst.GetQuad())
+      if (this.gltfPath === "" || this.gltfPath === "path") {
+        this._loading = false
+        return
       }
+
+      if (!this.instanceModel && sdkType.initOwner !== -1 && !sdkType.dataLoaded) {
+        // another instance of this type is already loading the shared model
+        this._loading = false
+        return
+      }
+
+      if (!this.instanceModel) sdkType.initOwner = this.uid
+      else this.gltfDataLoad = true
+
+      const result = await gltfData.load(this.gltfPath, false, this.debug)
+      if (!result) {
+        if (!this.instanceModel) sdkType.initOwner = -1
+        else this.gltfDataLoad = false
+        this.loadFailed = true
+        this._loading = false
+        return
+      }
+      await sdkType.LoadDynamicTextures(iRenderer, gltfData, textures, whiteTextureOwner, this.instanceModel)
+
+      this.doingInit = true
+      await this.doInit()
+      this._loading = false
+      this._syncSizeFromBounds()
+      // One refresh on completion, not one per frame for as long as it takes.
+      if (this.layoutView) this.layoutView.Refresh()
+    }
+
+    /**
+     * Push the model bounds onto the instance, but only when they actually
+     * change. Writing size and origin on every draw fights the user's own
+     * resize and drag, and mutates state the editor is mid-render from.
+     */
+    _syncSizeFromBounds() {
+      if (
+        this.maxBB[0] === Number.POSITIVE_INFINITY ||
+        this.minBB[0] === Number.NEGATIVE_INFINITY ||
+        this.maxBB[1] === Number.POSITIVE_INFINITY ||
+        this.minBB[1] === Number.NEGATIVE_INFINITY
+      )
+        return
+
+      const wi = this._inst
+      const x = wi.GetX()
+      const y = wi.GetY()
+      let width = this.maxBB[0] - this.minBB[0]
+      let height = this.maxBB[1] - this.minBB[1]
+      width = width == 0 ? 1 : width
+      height = height == 0 ? 1 : height
+      const originX = -(this.minBB[0] - x) / width
+      const originY = -(this.minBB[1] - y) / height
+
+      if (wi.GetWidth() !== width || wi.GetHeight() !== height) wi.SetSize(width, height)
+      if (wi.GetOriginX() !== originX) wi.SetOriginX(originX)
+      if (wi.GetOriginY() !== originY) wi.SetOriginY(originY)
+    }
+
+    _drawPlaceholder(iRenderer) {
+      iRenderer.SetAlphaBlend()
+      iRenderer.SetColorFillMode()
+      if (this.HadTextureError()) iRenderer.SetColorRgba(0.25, 0, 0, 0.25)
+      else iRenderer.SetColorRgba(0, 0, 0.5, 0.5)
+      iRenderer.Quad(this._inst.GetQuad())
+    }
+
+    // Synchronous: the editor declares Draw as returning void and does not await
+    // it, so this must never contain an await.
+    Draw(iRenderer, iDrawParams) {
+      if (this.loadFailed) return
+      if (!this.layoutView) this.layoutView = iDrawParams.GetLayoutView()
+
+      const texture = this.GetTexture()
+      if (!texture) {
+        this._drawPlaceholder(iRenderer)
+        return
+      }
+
+      if (!this.scale) this.scale = this._inst.GetPropertyValue("scale")
+      this.gltfPath = this._inst.GetPropertyValue("gtlf-path")
+
+      if (this.instanceModel && this.gltfData == null) {
+        this.gltfData = new globalThis.GltfData(this._runtime, this)
+      }
+
+      if (!this.loaded) {
+        this._startLoad(iRenderer).catch((err) => {
+          this.loadFailed = true
+          this._loading = false
+          console.error("[3DObject] editor model load failed", err)
+        })
+        this._drawPlaceholder(iRenderer)
+        return
+      }
+
+      const textures = this.instanceModel ? this.texture : this.sdkType.texture
+      const whiteTextureOwner = this.instanceModel ? this : this.sdkType
+
+      this._inst.ApplyBlendMode(iRenderer)
+      iRenderer.SetTexture(texture)
+      iRenderer.SetColor(this._inst.GetColor())
+
+      // getPolygons() is cached on the instance transform, so this is nearly
+      // free on the frames where nothing moved.
+      this.gltf.getPolygons()
+      this.gltf.render(
+        iRenderer,
+        this._inst.GetX(),
+        this._inst.GetY(),
+        this._inst.GetZElevation(),
+        new SDK.Quad(),
+        whiteTextureOwner.whiteTexture,
+        this._inst.GetColor(),
+        textures,
+        1 // opacity
+      )
+
+      this._syncSizeFromBounds()
     }
 
     GetTexture() {
