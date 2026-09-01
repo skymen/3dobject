@@ -109,18 +109,6 @@ class DeferredBatchTop {
       return origRun.call(this)
     }
 
-    // DEBUG (temporary): how many times C3 drains the command list per frame.
-    // _AddToDrawBatch forces one whenever the 65535-vertex buffer fills.
-    if (!renderer._c3obj_endBatchWrapped) {
-      const origEndBatch = renderer.EndBatch
-      renderer.EndBatch = function () {
-        const st = globalThis.ObjectBuffer && globalThis.ObjectBuffer.stats
-        if (st) st.flushes++
-        return origEndBatch.call(this)
-      }
-      renderer._c3obj_endBatchWrapped = true
-    }
-
     DeferredBatchTop._origRun = origRun
     DeferredBatchTop._installed = true
     return true
@@ -135,7 +123,7 @@ class DeferredBatchTop {
   }
 
   /**
-   * Queue `fn.call(self, a, b, c, d)` to run in sequence at flush time.
+   * Queue `fn.call(self, a, b, c, d, e)` to run in sequence at flush time.
    *
    * Arguments are passed through rather than captured in a closure so that a
    * scene with hundreds of models doesn't allocate hundreds of closures every

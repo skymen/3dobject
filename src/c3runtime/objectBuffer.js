@@ -212,7 +212,6 @@ class ObjectBufferTop {
   }
 
   createVao(renderer) {
-    ObjectBufferTop.stats.vaos++
     const gl = renderer._gl
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
@@ -429,16 +428,7 @@ class ObjectBufferTop {
     }
 
     // --- Draw Call (Common for all paths) ---
-    ObjectBufferTop.stats.drawn++;
-    if (globalThis.cached3DObjectShader && renderer._batchState.currentShader !== globalThis.cached3DObjectShader) {
-      ObjectBufferTop.stats.wrongProg++;
-    }
     gl.drawElements(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0);
-    // getError is a full pipeline stall, so it stays behind a flag.
-    if (globalThis.C3_3DOBJECT_GLCHECK) {
-      const err = gl.getError();
-      if (err) ObjectBufferTop.stats.glErr = err;
-    }
 
     // Unbind VAO once after all drawing paths
     gl.bindVertexArray(null);
@@ -695,22 +685,7 @@ ObjectBufferTop.MORPH_TEXTURE_UNIT = 4
 ObjectBufferTop.MAX_MORPH = 32
 ObjectBufferTop._morphCache = new WeakMap()
 
-ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0, vaos: 0, renders: 0, submitted: 0, skipDisabled: 0, skipNoTexture: 0, drawn: 0, wrongProg: 0, glErr: 0, quads: 0, meshLoops: 0, emptyVerts: 0, flushes: 0 }
-// DEBUG (temporary, not for release): per-frame counters. Cumulative ones
-// (created/reused/unshared/vaos) are deliberately left alone.
-ObjectBufferTop.resetFrameStats = function () {
-  const st = ObjectBufferTop.stats
-  st.renders = 0
-  st.submitted = 0
-  st.skipDisabled = 0
-  st.skipNoTexture = 0
-  st.drawn = 0
-  st.wrongProg = 0
-  st.quads = 0
-  st.meshLoops = 0
-  st.emptyVerts = 0
-  st.flushes = 0
-}
+ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0 }
 ObjectBufferTop.resetStats = function () {
   ObjectBufferTop.stats.created = 0
   ObjectBufferTop.stats.reused = 0

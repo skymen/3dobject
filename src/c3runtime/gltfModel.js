@@ -285,13 +285,9 @@ class GltfModelTop {
     let baseColorChanged = false
     if (!vec4.equals(currentColor, [1, 1, 1, 1])) baseColorChanged = true
 
-    globalThis.ObjectBuffer.stats.renders++
     for (let j = 0; j <= this.drawMeshesIndex; j++) {
       // Skip render if disabled
-      if (this.drawMeshes[j].disabled) {
-        globalThis.ObjectBuffer.stats.skipDisabled++
-        continue
-      }
+      if (this.drawMeshes[j].disabled) continue
 
       const drawVerts = this.drawMeshes[j].drawVerts
 
@@ -326,10 +322,7 @@ class GltfModelTop {
         } else {
           let texture = textures[material.name]
           // If texture is not loaded, skip rendering
-          if (!texture) {
-            globalThis.ObjectBuffer.stats.skipNoTexture++
-            continue
-          }
+          if (!texture) continue
           if (texture != currentTexture) {
             renderer.SetTexture(texture)
             currentTexture = texture
@@ -347,7 +340,6 @@ class GltfModelTop {
           instanceBoneBuffer = this.drawMeshes[j]?.boneBuffer
           this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
 
-          globalThis.ObjectBuffer.stats.submitted++
           objectBuffers[i].draw(
             renderer,
             instanceBoneBuffer,
@@ -364,8 +356,6 @@ class GltfModelTop {
         continue
       }
 
-      globalThis.ObjectBuffer.stats.meshLoops++
-      if (drawVerts.length === 0) globalThis.ObjectBuffer.stats.emptyVerts++
       for (let ii = 0; ii < drawVerts.length; ii++) {
         let v = xVerts[ii]
         let uv = drawUVs[ii]
@@ -410,7 +400,6 @@ class GltfModelTop {
             // Set base color
             renderer.SetColorRgba(currentColor[0], currentColor[1], currentColor[2], currentColor[3])
 
-            globalThis.ObjectBuffer.stats.quads++
             renderer.Quad3D2(x0, y0, z0, x1, y1, z1, x2, y2, z2, x2, y2, z2, tempQuad, true)
           }
         }
