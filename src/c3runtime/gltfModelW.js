@@ -1057,7 +1057,7 @@ class GltfModelWTop {
           if (objectBuffers.length == 0) {
             // No gpuSkinning here, so acquire() always allocates: this path
             // re-uploads per-instance vertex data via updateVertexData() below.
-            objectBuffers.push(ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[j], 0, false))
+            objectBuffers.push(ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[j], 0, false, this._hasAnimations()))
           } else {
             objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[j], 0)
           }
@@ -1091,7 +1091,13 @@ class GltfModelWTop {
           const objectBuffers = this.drawMeshes[this.drawMeshesIndex].objectBuffers
           if (objectBuffers.length === 0)
             objectBuffers.push(
-              ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+              ObjectBufferW.acquire(
+                this.inst.renderer,
+                this.drawMeshes[this.drawMeshesIndex],
+                0,
+                gpuSkinning,
+                this._hasAnimations()
+              )
             )
         }
       }
@@ -1107,6 +1113,12 @@ class GltfModelWTop {
    * every instance, re-running the whole node walk and per-vertex transform. In
    * the editor the result only changes when the instance transform does.
    */
+  /** True when anything can rewrite this model's vertices between frames. */
+  _hasAnimations() {
+    const anims = this.gltfData && this.gltfData.animations
+    return !!(anims && anims.length)
+  }
+
   _editorPolygonSignature() {
     const inst = this.inst
     const wi = inst._inst
@@ -1212,7 +1224,13 @@ class GltfModelWTop {
           const objectBuffers = this.drawMeshes[this.drawMeshesIndex].objectBuffers
           if (objectBuffers.length === 0)
             objectBuffers.push(
-              ObjectBufferW.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
+              ObjectBufferW.acquire(
+                this.inst.renderer,
+                this.drawMeshes[this.drawMeshesIndex],
+                0,
+                gpuSkinning,
+                this._hasAnimations()
+              )
             )
         }
       }

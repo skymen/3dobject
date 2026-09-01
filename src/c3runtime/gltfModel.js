@@ -421,7 +421,8 @@ class GltfModelTop {
             instanceBoneBuffer,
             this._sdkType.gltfData,
             currentColor, // Pass calculated color to draw method
-            this.drawMeshes[j].morphWeights
+            this.drawMeshes[j].morphWeights,
+            objectBuffers[i].usesSourcePositions ? this.drawMeshes[j].nodeXform : null
           )
           totalTriangles += objectBuffers[i].indexDataLength / 3
         }
@@ -600,6 +601,7 @@ class GltfModelTop {
             objectBuffers: [],
             morphTargets: [],
             morphWeights: null,
+            nodeXform: null,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)
@@ -677,7 +679,11 @@ class GltfModelTop {
             if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
               drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
             }
-            if (gpuSkinning && drawVertsOrig.length === 0 && "POSITION" in node.mesh.primitives[i].attributes) {
+            if (
+              (gpuSkinning || staticGeometry) &&
+              drawVertsOrig.length === 0 &&
+              "POSITION" in node.mesh.primitives[i].attributes
+            ) {
               drawVertsOrig.push(sharedOrCopy(posData, Float32Array))
             }
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
@@ -697,13 +703,15 @@ class GltfModelTop {
               dm.morphWeights = morphWeights
             }
             if (staticGeometry) {
+              const dm = this.drawMeshes[this.drawMeshesIndex]
               if (objectBuffers.length == 0) {
-                objectBuffers.push(
-                  ObjectBuffer.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
-                )
+                objectBuffers.push(ObjectBuffer.acquire(this.inst.renderer, dm, 0, gpuSkinning, this._hasAnimations()))
               } else if (!gpuSkinning) {
-                objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0)
+                objectBuffers[0].updateVertexData(this.inst.renderer, dm, 0)
               }
+              // Passed to draw() rather than stored on the buffer: a shared
+              // buffer has no single owner to hold it for.
+              dm.nodeXform = node.matrix
               objectBuffers[0].setNodeXform(node.matrix)
             }
           }
@@ -736,6 +744,12 @@ class GltfModelTop {
    * every instance, re-running the whole node walk and per-vertex transform. In
    * the editor the result only changes when the instance transform does.
    */
+  /** True when anything can rewrite this model's vertices between frames. */
+  _hasAnimations() {
+    const anims = this.gltfData && this.gltfData.animations
+    return !!(anims && anims.length)
+  }
+
   _editorPolygonSignature() {
     const inst = this.inst
     const wi = inst._inst
@@ -861,6 +875,7 @@ class GltfModelTop {
             objectBuffers: [],
             morphTargets: [],
             morphWeights: null,
+            nodeXform: null,
             maxJointIndexUsed: -1,
           })
           this.meshNames.set(node.name, this.drawMeshesIndex)
@@ -969,7 +984,11 @@ class GltfModelTop {
             if (drawUVs.length === 0 && "TEXCOORD_0" in node.mesh.primitives[i].attributes) {
               drawUVs.push(sharedOrCopy(node.mesh.primitives[i].attributes.TEXCOORD_0.data, Float32Array))
             }
-            if (gpuSkinning && drawVertsOrig.length === 0 && "POSITION" in node.mesh.primitives[i].attributes) {
+            if (
+              (gpuSkinning || staticGeometry) &&
+              drawVertsOrig.length === 0 &&
+              "POSITION" in node.mesh.primitives[i].attributes
+            ) {
               drawVertsOrig.push(sharedOrCopy(posData, Float32Array))
             }
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
@@ -1003,12 +1022,11 @@ class GltfModelTop {
               dm.morphWeights = morphWeights
             }
             if (staticGeometry) {
+              const dm = this.drawMeshes[this.drawMeshesIndex]
               if (objectBuffers.length == 0) {
-                objectBuffers.push(
-                  ObjectBuffer.acquire(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0, gpuSkinning)
-                )
+                objectBuffers.push(ObjectBuffer.acquire(this.inst.renderer, dm, 0, gpuSkinning, this._hasAnimations()))
               } else if (!gpuSkinning) {
-                objectBuffers[0].updateVertexData(this.inst.renderer, this.drawMeshes[this.drawMeshesIndex], 0)
+                objectBuffers[0].updateVertexData(this.inst.renderer, dm, 0)
               }
             }
           }

@@ -93,6 +93,7 @@ class DeferredBatchTop {
         const c = this._c3obj_c
         const d = this._c3obj_d
         const e = this._c3obj_e
+        const f = this._c3obj_f
         // Batch jobs are pooled and live for the lifetime of the renderer, so
         // anything left referenced here would never be collected. Clear before
         // invoking, so a throwing callback can't leak either.
@@ -103,7 +104,8 @@ class DeferredBatchTop {
         this._c3obj_c = null
         this._c3obj_d = null
         this._c3obj_e = null
-        if (fn) fn.call(self, a, b, c, d, e)
+        this._c3obj_f = null
+        if (fn) fn.call(self, a, b, c, d, e, f)
         return
       }
       return origRun.call(this)
@@ -123,13 +125,13 @@ class DeferredBatchTop {
   }
 
   /**
-   * Queue `fn.call(self, a, b, c, d, e)` to run in sequence at flush time.
+   * Queue `fn.call(self, a, b, c, d, e, f)` to run in sequence at flush time.
    *
    * Arguments are passed through rather than captured in a closure so that a
    * scene with hundreds of models doesn't allocate hundreds of closures every
    * frame.
    */
-  static push(renderer, fn, self, a, b, c, d, e) {
+  static push(renderer, fn, self, a, b, c, d, e, f) {
     DeferredBatchTop.stats.pushed++
     const job = renderer.PushBatch()
     job._type = BATCH_CUSTOM_CALLBACK
@@ -140,6 +142,7 @@ class DeferredBatchTop {
     job._c3obj_c = c === undefined ? null : c
     job._c3obj_d = d === undefined ? null : d
     job._c3obj_e = e === undefined ? null : e
+    job._c3obj_f = f === undefined ? null : f
     // A callback may do anything, so the next quad must start a fresh draw job
     // rather than merging into whichever one preceded this.
     renderer._topOfBatch = 0

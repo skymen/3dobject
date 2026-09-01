@@ -17,10 +17,15 @@ class ObjectBufferTop {
     this.gpuSkinning = gpuSkinning
 
     let vertexData, texcoordData, indexData, colorData, normalData, weightsData, jointsData
-    if (gpuSkinning) {
+    // Prefer the untransformed source positions. The node transform then rides
+    // on the uNodeXform uniform instead of being baked into the vertices, which
+    // is what lets every node and every instance share one buffer.
+    if (mesh.drawVertsOrig && mesh.drawVertsOrig[primitiveIndex]) {
       vertexData = mesh.drawVertsOrig[primitiveIndex]
+      this.usesSourcePositions = true
     } else {
       vertexData = mesh.drawVerts[primitiveIndex]
+      this.usesSourcePositions = false
     }
     texcoordData = mesh.drawUVs[primitiveIndex]
     if (!texcoordData || texcoordData.length == 0) {
@@ -143,8 +148,11 @@ class ObjectBufferTop {
    * playing different animations, wearing different skins and showing different
    * sub-meshes.
    */
-  static acquire(renderer, mesh, primitiveIndex, gpuSkinning) {
-    if (!ObjectBufferTop.isSharingEnabled() || !ObjectBufferTop._isShareable(mesh, primitiveIndex, gpuSkinning)) {
+  static acquire(renderer, mesh, primitiveIndex, gpuSkinning, hasAnimations) {
+    if (
+      !ObjectBufferTop.isSharingEnabled() ||
+      !ObjectBufferTop._isShareable(mesh, primitiveIndex, gpuSkinning, hasAnimations)
+    ) {
       ObjectBufferTop.stats.unshared++
       return new ObjectBufferTop(renderer, mesh, primitiveIndex, gpuSkinning)
     }
@@ -181,20 +189,24 @@ class ObjectBufferTop {
     return globalThis.C3_3DOBJECT_SHARE_BUFFERS !== false
   }
 
-  static _isShareable(mesh, primitiveIndex, gpuSkinning) {
-    if (!gpuSkinning) return false
-    // Both conditions from acquire()'s doc comment: shared source data, and a
-    // skinned primitive (so `nodeXform` is never read at draw time).
-    return !!(
-      mesh.drawVertsOrig &&
-      mesh.drawVertsOrig[primitiveIndex] &&
-      mesh.drawIndices &&
-      mesh.drawIndices[primitiveIndex] &&
-      mesh.drawWeights &&
-      mesh.drawWeights[primitiveIndex] &&
-      mesh.drawJoints &&
-      mesh.drawJoints[primitiveIndex]
-    )
+  static _isShareable(mesh, primitiveIndex, gpuSkinning, hasAnimations) {
+    // The buffer has to be built from the shared source accessors, not from an
+    // instance's transformed copy.
+    if (!mesh.drawVertsOrig || !mesh.drawVertsOrig[primitiveIndex]) return false
+    if (!mesh.drawIndices || !mesh.drawIndices[primitiveIndex]) return false
+
+    if (gpuSkinning) {
+      // Deformation is bone uniforms; the base mesh never changes.
+      return !!(
+        mesh.drawWeights && mesh.drawWeights[primitiveIndex] && mesh.drawJoints && mesh.drawJoints[primitiveIndex]
+      )
+    }
+
+    // Unskinned: shareable exactly when nothing rewrites the vertices per frame.
+    // CPU-animated meshes recompute transformedVerts every frame from an
+    // animated node matrix, and two instances at different animation times hold
+    // genuinely different geometry.
+    return !hasAnimations
   }
 
   _ExecuteBatch(renderer) {
@@ -326,7 +338,7 @@ class ObjectBufferTop {
    * per primitive, per instance, and it truncates every other object's batch
    * as a side effect.
    */
-  draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null) {
+  draw(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null, nodeXform = null) {
     const DeferredBatch = globalThis.DeferredBatch
 
     if (DeferredBatch && DeferredBatch.install(renderer) && DeferredBatch.isEnabled()) {
@@ -346,11 +358,14 @@ class ObjectBufferTop {
         morphWeights && morphWeights.length
           ? DeferredBatch.scratch(job, 2, morphWeights.length, morphWeights)
           : null
+      // The scene-graph matrix is rewritten in place by the next getPolygons(),
+      // so it has to be snapshotted like the colour and the weights.
+      job._c3obj_f = nodeXform ? DeferredBatch.scratch(job, 3, 16, nodeXform) : null
       return
     }
 
     this._ExecuteBatch(renderer) // Flushes any pending C3 draw calls
-    this._drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor, morphWeights)
+    this._drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor, morphWeights, nodeXform)
   }
 
   /**
@@ -359,7 +374,7 @@ class ObjectBufferTop {
    * as the command list executes, so reading it here is correct where reading
    * it at record time would not be.
    */
-  _drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null) {
+  _drawNow(renderer, instanceBoneBuffer, modelGltfData, instanceColor = null, morphWeights = null, nodeXform = null) {
     const gl = renderer._gl;
 
     if (this.vao === null) {
@@ -423,6 +438,8 @@ class ObjectBufferTop {
         if (!nodeXformUploadedByBoneBuffer) {
             if (this.gpuSkinning) {
               this.uploadNodeXformUniforms(renderer);
+            } else if (nodeXform) {
+              this._uploadNodeXform(renderer, nodeXform);
             }
         }
     }
@@ -586,14 +603,26 @@ class ObjectBufferTop {
   }
 
   setNodeXform(nodeXform) {
-    // A shared buffer has no single owner to hold this for, and nothing reads it
-    // on the skinned path it is restricted to. Dropping the write keeps one
-    // instance from silently overwriting another's — see acquire().
+    // A shared buffer has no single owner to hold this for. Unskinned meshes now
+    // pass the node transform to draw() as an argument instead, so it stays
+    // per-draw rather than becoming buffer state - see acquire().
     if (this._shared) return
     this.nodeXform = nodeXform
   }
 
+  /** Node transform for an unskinned mesh drawn from untransformed positions. */
+  _uploadNodeXform(renderer, nodeXform) {
+    const gl = renderer._gl
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram
+    gl.uniformMatrix4fv(globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXform"), false, nodeXform)
+    gl.uniform1f(globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable"), 1.0)
+  }
+
   updateVertexData(renderer, mesh, primitiveIndex) {
+    // Built from the immutable accessor: there is nothing to refresh, and
+    // overwriting it with this instance's transformed verts would corrupt the
+    // buffer for every other instance sharing it.
+    if (this.usesSourcePositions) return
     const gl = renderer._gl
     const vertexData = mesh.drawVerts[primitiveIndex]
 
