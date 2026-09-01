@@ -179,13 +179,9 @@ class GltfModelTop {
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
 
-    this.locUModelRotate = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotate")
-    this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
-    this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-
-    gl.uniformMatrix4fv(this.locUModelRotate, false, modelRotate)
-    gl.uniform1f(this.locUModelRotateEnable, 1)
-    gl.uniform1f(this.locUPhongEnable, 0)
+    globalThis.uniformCache.setMatrix4(gl, shaderProgram, "uModelRotate", modelRotate)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uModelRotateEnable", 1)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uPhongEnable", 0)
   }
 
   disableVertexShaderModelRotate(renderer) {
@@ -193,22 +189,16 @@ class GltfModelTop {
     const batchState = renderer._batchState
     const shaderProgram = batchState.currentShader._shaderProgram
 
-    this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
-    this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-
-    gl.uniform1f(this.locUModelRotateEnable, 0)
-    gl.uniform1f(this.locUPhongEnable, 0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uModelRotateEnable", 0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uPhongEnable", 0)
   }
 
   _disableGPUSkinning(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
 
-    this.locUSkinEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uSkinEnable")
-    this.locUNodeXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable")
-
-    gl.uniform1f(this.locUSkinEnable, 0.0)
-    gl.uniform1f(this.locUNodeXformEnable, 0.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uSkinEnable", 0.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uNodeXformEnable", 0.0)
   }
 
   /**
@@ -295,13 +285,9 @@ class GltfModelTop {
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
 
     // Reset color uniforms for subsequent non-3D objects
-    const locUseUniformColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUseUniformColor")
-    const locObjectColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uObjectColor")
-    const locHasVertexColors = globalThis.uniformCache.getLocation(gl, shaderProgram, "uHasVertexColors")
-
-    if (locUseUniformColor) gl.uniform1f(locUseUniformColor, 0.0)
-    if (locObjectColor) gl.uniform4f(locObjectColor, 1.0, 1.0, 1.0, 1.0)
-    if (locHasVertexColors) gl.uniform1f(locHasVertexColors, 1.0) // Reset to C3 default (use vertex colors)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uUseUniformColor", 0.0)
+    globalThis.uniformCache.setVec4(gl, shaderProgram, "uObjectColor", 1.0, 1.0, 1.0, 1.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uHasVertexColors", 1.0) // Reset to C3 default
   }
 
   render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {
@@ -311,8 +297,24 @@ class GltfModelTop {
     // object's batching as a side effect.
     if (!this.inst.isEditor && !this._useDeferred(renderer)) renderer.EndBatch()
 
+    // Six allocations per instance per frame added up to real GC pressure at
+    // high instance counts; all of it is scratch that never outlives the call.
+    if (!this._scratch) {
+      const m = globalThis.glMatrix3D
+      this._scratch = {
+        currentColor: [-1, -1, -1, -1],
+        instanceColor: [0, 0, 0, 0],
+        finalColor: m.vec4.create(),
+        tmpModelView: m.mat4.create(),
+        modelRotate: m.mat4.create(),
+        rotate: m.quat.create(),
+      }
+    }
+    const scratch = this._scratch
+
     let totalTriangles = 0
-    let currentColor = [-1, -1, -1, -1]
+    const currentColor = scratch.currentColor
+    currentColor[0] = currentColor[1] = currentColor[2] = currentColor[3] = -1
     let currentTexture = null
     const rendererVertexData = renderer._vertexData
     const rendererTexcoordData = renderer._texcoordData
@@ -322,16 +324,15 @@ class GltfModelTop {
     const mat4 = globalThis.glMatrix3D.mat4
     const quat = globalThis.glMatrix3D.quat
 
-    const instanceColor = [
-      instanceC3Color.getR(),
-      instanceC3Color.getG(),
-      instanceC3Color.getB(),
-      instanceC3Color.getA(),
-    ]
-    const finalColor = vec4.create()
+    const instanceColor = scratch.instanceColor
+    instanceColor[0] = instanceC3Color.getR()
+    instanceColor[1] = instanceC3Color.getG()
+    instanceColor[2] = instanceC3Color.getB()
+    instanceColor[3] = instanceC3Color.getA()
+    const finalColor = scratch.finalColor
 
-    const tmpModelView = mat4.create()
-    const modelRotate = mat4.create()
+    const tmpModelView = scratch.tmpModelView
+    const modelRotate = scratch.modelRotate
     if (!this.inst.isEditor) {
       mat4.copy(tmpModelView, renderer._matMV)
       const xAngle = this.inst.xAngle
@@ -340,7 +341,7 @@ class GltfModelTop {
       const xScale = this.inst.scale / (this.inst.xScale == 0 ? 1 : this.inst.xScale)
       const yScale = this.inst.scale / (this.inst.yScale == 0 ? 1 : this.inst.yScale)
       const zScale = this.inst.scale / (this.inst.zScale == 0 ? 1 : this.inst.zScale)
-      const rotate = quat.create()
+      const rotate = scratch.rotate
       quat.fromEuler(rotate, xAngle, yAngle, zAngle)
       mat4.fromRotationTranslationScaleOrigin(
         modelRotate,
@@ -414,7 +415,6 @@ class GltfModelTop {
         let instanceBoneBuffer
         for (let i = 0; i < objectBuffers.length; i++) {
           instanceBoneBuffer = this.drawMeshes[j]?.boneBuffer
-          this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
 
           objectBuffers[i].draw(
             renderer,
@@ -485,9 +485,9 @@ class GltfModelTop {
    * shader declares that block doesn't read ours.
    */
   _afterDrawCleanup(renderer) {
-    this.disableVertexShaderModelRotate(renderer)
-    this._disableGPUSkinning(renderer)
-    this._resetColorUniforms(renderer)
+    // The uniform resets that used to live here act on OUR dedicated program,
+    // which nothing else draws with, so the next instance overwrites them
+    // anyway. Only genuinely shared GL state needs putting back.
     if (this.inst.staticGeometry) this._restoreC3Attribs(renderer)
     // @ts-ignore
     if (globalThis.BoneBuffer) this._bindDummyBonesUbo(renderer)

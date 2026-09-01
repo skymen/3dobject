@@ -381,7 +381,7 @@ class ObjectBufferTop {
       this.vao = this.createVao(renderer); // also resolves the color uniform locations
     }
     // Set color uniforms for 3DObject compatibility
-    this._setColorUniforms(gl, instanceColor);
+    this._setColorUniforms(gl, instanceColor, renderer._batchState.currentShader._shaderProgram);
     this._uploadMorphUniforms(renderer, morphWeights);
     gl.bindVertexArray(this.vao);
 
@@ -412,15 +412,18 @@ class ObjectBufferTop {
             if (globalThis.BoneBuffer) { // Check if BoneBuffer class is available
                 const blockIndex = globalThis.uniformCache.getUniformBlockIndex(gl, shaderProgram, "Bones");
                 if (blockIndex !== gl.INVALID_INDEX && blockIndex !== -1) { // Shader expects the Bones UBO
-                    gl.uniformBlockBinding(shaderProgram, blockIndex, globalThis.BoneBuffer.BONE_UBO_BINDING_POINT);
+                    // uniformBlockBinding is permanent program state, so this
+                    // only needs doing once per program, not once per instance
+                    // per frame. uSkinEnable was already set by
+                    // _disableGPUSkinning immediately above.
+                    if (!ObjectBufferTop._boundBonesBlock.has(shaderProgram)) {
+                        gl.uniformBlockBinding(shaderProgram, blockIndex, globalThis.BoneBuffer.BONE_UBO_BINDING_POINT);
+                        ObjectBufferTop._boundBonesBlock.add(shaderProgram);
+                    }
                     const dummyUBO = globalThis.BoneBuffer._getOrCreateDummyUBO(gl);
                     if (dummyUBO) {
                         gl.bindBufferBase(gl.UNIFORM_BUFFER, globalThis.BoneBuffer.BONE_UBO_BINDING_POINT, dummyUBO);
                     }
-                    // Ensure uSkinEnable is off if we bound a dummy here.
-                    // This might be redundant if the shader properly defaults or if uSkinEnable is always set.
-                    const locUSkinEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uSkinEnable");
-                    if (locUSkinEnable) gl.uniform1f(locUSkinEnable, 0.0);
                 } else {
                     // Shader does not expect "Bones" block, do nothing for UBO.
                 }
@@ -457,36 +460,19 @@ class ObjectBufferTop {
   _disableGPUSkinning(renderer) {
     const gl = renderer._gl;
     const shaderProgram = renderer._batchState.currentShader._shaderProgram;
-    const locUSkinEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uSkinEnable");
-    const locUNodeXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable");
-    if (locUSkinEnable) gl.uniform1f(locUSkinEnable, 0.0);
-    if (locUNodeXformEnable) gl.uniform1f(locUNodeXformEnable, 0.0);
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uSkinEnable", 0.0);
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uNodeXformEnable", 0.0);
   }
 
   // Helper method for setting color uniforms for 3DObject instance tinting
-  _setColorUniforms(gl, instanceColor) {
-    try {
-      // Enable 3DObject uniform color mode
-      if (this.locUseUniformColor !== null) {
-        gl.uniform1f(this.locUseUniformColor, 1.0);
-      }
-      
-      // Set whether this object has vertex colors
-      if (this.locHasVertexColors !== null) {
-        gl.uniform1f(this.locHasVertexColors, this.hasVertexColors ? 1.0 : 0.0);
-      }
-      
-      // Set instance color if provided
-      if (this.locObjectColor !== null) {
-        if (instanceColor && instanceColor.length >= 4) {
-          gl.uniform4fv(this.locObjectColor, instanceColor);
-        } else {
-          // Default to white/opaque if no color provided
-          gl.uniform4f(this.locObjectColor, 1.0, 1.0, 1.0, 1.0);
-        }
-      }
-    } catch (e) {
-      console.warn("[3DObject] Error setting color uniforms:", e);
+  _setColorUniforms(gl, instanceColor, shaderProgram) {
+    const uc = globalThis.uniformCache
+    uc.setFloat(gl, shaderProgram, "uUseUniformColor", 1.0)
+    uc.setFloat(gl, shaderProgram, "uHasVertexColors", this.hasVertexColors ? 1.0 : 0.0)
+    if (instanceColor && instanceColor.length >= 4) {
+      uc.setVec4(gl, shaderProgram, "uObjectColor", instanceColor[0], instanceColor[1], instanceColor[2], instanceColor[3])
+    } else {
+      uc.setVec4(gl, shaderProgram, "uObjectColor", 1.0, 1.0, 1.0, 1.0)
     }
   }
 
@@ -614,8 +600,8 @@ class ObjectBufferTop {
   _uploadNodeXform(renderer, nodeXform) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
-    gl.uniformMatrix4fv(globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXform"), false, nodeXform)
-    gl.uniform1f(globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable"), 1.0)
+    globalThis.uniformCache.setMatrix4(gl, shaderProgram, "uNodeXform", nodeXform)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uNodeXformEnable", 1.0)
   }
 
   updateVertexData(renderer, mesh, primitiveIndex) {
@@ -713,6 +699,8 @@ ObjectBufferTop.MORPH_TEXTURE_UNIT = 4
 // Must match MAX_MORPH in the vertex shader (plugin.js).
 ObjectBufferTop.MAX_MORPH = 32
 ObjectBufferTop._morphCache = new WeakMap()
+// Programs whose Bones block has already been bound to the UBO binding point.
+ObjectBufferTop._boundBonesBlock = new WeakSet()
 
 ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0 }
 ObjectBufferTop.resetStats = function () {
