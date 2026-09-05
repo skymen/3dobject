@@ -157,6 +157,653 @@ function patchAttributes(meshes) {
   attributesLoaded = true
 }
 
+// =============================================================================
+// Batched GPU-skinning protocol
+//
+// One "batch" message per worker per frame carries every on-screen instance's
+// request; one "batchResult" carries every instance's pose. Before this the
+// main thread sent two messages per instance per frame (each transferring a
+// 260 KB vertex buffer that GPU skinning never reads), so 100 characters meant
+// 200 postMessages a frame - the per-message overhead, not the maths, is what
+// made the worker "lag" past ~100 instances.
+//
+// Request slot (Float64, REQ_STRIDE per instance):
+//   [0] iid  [1] animation index, -1 = pose only  [2] time  [3] deltaTime
+//   [4] animation blend  [5] loop (0/1)  [6..7] reserved
+// Reply: `out` holds graph.floats floats per slot, laid out by buildGraph
+// (unskinned mesh node matrices, then per skin GROUP joints + root transform,
+// then posed bounds). The main thread builds the identical layout from the
+// same model graph (buildPoseLayout in gltfModelW.js - KEEP IN SYNC).
+//
+// Per-instance state is three flat typed arrays (TRS, world matrices, group
+// inverses) plus sampler cursors: about 12 KB per character. Every node,
+// mesh, skin and animation object is shared. The previous design cloned the
+// whole node graph AND the animation list per instance - ~350 KB per
+// character - which is what ran a 6,000-instance test out of memory.
+//
+// Skin groups: every skinned mesh node with the same parent, translation, scale
+// and joint list yields identical bone matrices, so they are computed and sent
+// once. A typical character exported as 20+ mesh parts under one armature is a
+// single group - 23x less bone maths and transfer than one set per part.
+//
+// ---- Keyframe sampler: KEEP IN SYNC with runtime/animSampler.js ----
+//
+// KEEP IN SYNC with the copy in files/gltfWorker.js (the worker is a plain
+// script that the build copies verbatim, so it cannot import this module).
+//
+// Design goals, in order:
+//   1. No per-instance copy of the animation data. Targets are NODE INDICES
+//      and the sampled transforms go into a flat per-instance Float32Array
+//      (TRS_STRIDE floats per node: translation, rotation, scale), so every
+//      instance shares one animation list. Cloning the channels per instance
+//      was ~2,900 objects per character per thread.
+//   2. No allocation per call. The old sampler minted four typed-array views
+//      per channel per frame plus an object and a clone per channel for the
+//      blend snapshot.
+//   3. No linear scan. A per-channel cursor steps forward from where it was
+//      last frame and only falls back to a binary search on a seek.
+//
+// The blend snapshot is stored per channel index as a path code plus four
+// floats, matching the old behaviour where a blend compared channel i of the
+// new animation with channel i of the previous one.
+
+const TRS_STRIDE = 10 // t(3) r(4) s(3)
+const PATH_NONE = 0
+const PATH_TRANSLATION = 1
+const PATH_ROTATION = 2
+const PATH_SCALE = 3
+const PATH_WEIGHTS = 4
+
+function pathCode(path) {
+  if (path === "translation") return PATH_TRANSLATION
+  if (path === "rotation") return PATH_ROTATION
+  if (path === "scale") return PATH_SCALE
+  if (path === "weights") return PATH_WEIGHTS
+  return PATH_NONE
+}
+
+/**
+ * Per-animation target table, cached on the (shared) animation object:
+ * node index and path code per channel. `nodeIndexOf` maps the node objects
+ * the channels reference to their index in the node list.
+ */
+function prepareAnimation(anim, nodeIndexOf) {
+  if (anim._targetIdx) return anim
+  const n = anim.channels.length
+  const idx = new Int32Array(n)
+  const codes = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    const c = anim.channels[i]
+    const node = c.target.node
+    const k = node ? nodeIndexOf.get(node) : undefined
+    idx[i] = k === undefined ? -1 : k
+    codes[i] = idx[i] < 0 ? PATH_NONE : pathCode(c.target.path)
+  }
+  anim._targetIdx = idx
+  anim._pathCodes = codes
+  return anim
+}
+
+/** Fill `trs` from a node list (skinned nodes get identity rotation). */
+function initTRS(trs, nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const o = i * TRS_STRIDE
+    const t = n.translation || [0, 0, 0]
+    const r = n.skin ? [0, 0, 0, 1] : n.rotation || [0, 0, 0, 1]
+    const s = n.scale || [1, 1, 1]
+    trs[o] = t[0]; trs[o + 1] = t[1]; trs[o + 2] = t[2]
+    trs[o + 3] = r[0]; trs[o + 4] = r[1]; trs[o + 5] = r[2]; trs[o + 6] = r[3]
+    trs[o + 7] = s[0]; trs[o + 8] = s[1]; trs[o + 9] = s[2]
+  }
+  return trs
+}
+
+/** Per-instance sampler state. `animations` is the shared animation list. */
+function createSamplerState(animations) {
+  let maxChannels = 0
+  for (const a of animations || []) if (a.channels.length > maxChannels) maxChannels = a.channels.length
+  const mkSnap = () => ({ count: 0, path: new Uint8Array(maxChannels), vals: new Float32Array(maxChannels * 4) })
+  return {
+    blendState: "init",
+    blendTime: 0,
+    lastIndex: 0,
+    lastTargetIndex: 0,
+    snaps: [mkSnap(), mkSnap()],
+    blendSnap: null,
+    cursors: new Map(),
+  }
+}
+
+function lerp3(out, o, arr, i0, i1, t) {
+  out[o] = arr[i0] + t * (arr[i1] - arr[i0])
+  out[o + 1] = arr[i0 + 1] + t * (arr[i1 + 1] - arr[i0 + 1])
+  out[o + 2] = arr[i0 + 2] + t * (arr[i1 + 2] - arr[i0 + 2])
+}
+
+// glMatrix quat.slerp, reading both endpoints straight out of the flat array.
+function slerp4(out, o, arr, i0, i1, t) {
+  const ax = arr[i0], ay = arr[i0 + 1], az = arr[i0 + 2], aw = arr[i0 + 3]
+  let bx = arr[i1], by = arr[i1 + 1], bz = arr[i1 + 2], bw = arr[i1 + 3]
+  let cosom = ax * bx + ay * by + az * bz + aw * bw
+  if (cosom < 0) {
+    cosom = -cosom
+    bx = -bx; by = -by; bz = -bz; bw = -bw
+  }
+  let scale0, scale1
+  if (1 - cosom > 0.000001) {
+    const omega = Math.acos(cosom)
+    const sinom = Math.sin(omega)
+    scale0 = Math.sin((1 - t) * omega) / sinom
+    scale1 = Math.sin(t * omega) / sinom
+  } else {
+    scale0 = 1 - t
+    scale1 = t
+  }
+  out[o] = scale0 * ax + scale1 * bx
+  out[o + 1] = scale0 * ay + scale1 * by
+  out[o + 2] = scale0 * az + scale1 * bz
+  out[o + 3] = scale0 * aw + scale1 * bw
+}
+
+// Same shapes, blending the value already in out[o..] FROM a snapshot value.
+function lerp3From(out, o, snap, s, t) {
+  out[o] = snap[s] + t * (out[o] - snap[s])
+  out[o + 1] = snap[s + 1] + t * (out[o + 1] - snap[s + 1])
+  out[o + 2] = snap[s + 2] + t * (out[o + 2] - snap[s + 2])
+}
+function slerp4From(out, o, snap, s, t) {
+  const ax = snap[s], ay = snap[s + 1], az = snap[s + 2], aw = snap[s + 3]
+  let bx = out[o], by = out[o + 1], bz = out[o + 2], bw = out[o + 3]
+  let cosom = ax * bx + ay * by + az * bz + aw * bw
+  if (cosom < 0) {
+    cosom = -cosom
+    bx = -bx; by = -by; bz = -bz; bw = -bw
+  }
+  let scale0, scale1
+  if (1 - cosom > 0.000001) {
+    const omega = Math.acos(cosom)
+    const sinom = Math.sin(omega)
+    scale0 = Math.sin((1 - t) * omega) / sinom
+    scale1 = Math.sin(t * omega) / sinom
+  } else {
+    scale0 = 1 - t
+    scale1 = t
+  }
+  out[o] = scale0 * ax + scale1 * bx
+  out[o + 1] = scale0 * ay + scale1 * by
+  out[o + 2] = scale0 * az + scale1 * bz
+  out[o + 3] = scale0 * aw + scale1 * bw
+}
+
+function findKeyframe(times, t, cursor) {
+  const last = times.length - 2
+  let t0 = cursor
+  if (t0 < 0) t0 = 0
+  if (t0 > last) t0 = last
+  if (t < times[t0]) {
+    // Seek backwards (loop wrap, animation change): binary search.
+    let lo = 0
+    let hi = t0
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (times[mid] <= t) lo = mid
+      else hi = mid - 1
+    }
+    t0 = lo
+  } else {
+    while (t0 < last && t > times[t0 + 1]) t0++
+  }
+  return t0
+}
+
+/**
+ * Sample `anim` (prepared with prepareAnimation) at `time` into `trs`, with
+ * the blend state machine and cross-animation blending of the original
+ * implementation. Morph-target weight channels are ignored: the worker path
+ * never rendered morphs.
+ */
+function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, animationLoop, trs) {
+  // Blend state machine
+  switch (state.blendState) {
+    case "init":
+      if (animationBlend != 0 && state.lastIndex != index) {
+        state.blendState = "blend"
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+      }
+      break
+    case "blend":
+      if (state.lastIndex != index) {
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+        break
+      }
+      if (state.blendTime > animationBlend) {
+        state.blendState = "idle"
+        break
+      }
+      state.blendTime += deltaTime
+      break
+    case "idle":
+      if (state.lastIndex != index) {
+        state.blendState = "blend"
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+      }
+      break
+    default:
+      state.blendState = "init"
+  }
+
+  const channels = anim.channels
+  const n = channels.length
+  const targetIdx = anim._targetIdx
+  const codes = anim._pathCodes
+  let cursors = state.cursors.get(index)
+  if (!cursors) {
+    cursors = new Int32Array(n)
+    state.cursors.set(index, cursors)
+  }
+
+  const blending = state.blendState === "blend" && state.blendSnap
+  const blendSnap = blending ? state.blendSnap : null
+  let blend = 0
+  if (blending) {
+    blend = state.blendTime == 0 ? 0 : state.blendTime / animationBlend
+    if (blend > 1) blend = 1
+  }
+  const snapshot = animationBlend != 0 ? state.snaps[state.lastTargetIndex] : null
+  if (snapshot) snapshot.count = n
+
+  for (let i = 0; i < n; i++) {
+    const code = codes[i]
+    const c = channels[i]
+    const input = c.sampler.input
+    const tMin = input.min[0]
+    const tMax = input.max[0]
+    if (tMax == tMin || code === PATH_NONE || code === PATH_WEIGHTS) {
+      if (snapshot) snapshot.path[i] = PATH_NONE
+      continue
+    }
+    let t = time
+    if (animationLoop) t = ((t - tMin) % (tMax - tMin)) + tMin
+    else if (t > tMax) t = tMax - 0.01
+
+    const times = input.data
+    const t0 = findKeyframe(times, t, cursors[i])
+    cursors[i] = t0
+    const t1 = t0 + 1
+    const span = times[t1] - times[t0]
+    const f = span > 0 ? (t - times[t0]) / span : 0
+
+    const out = c.sampler.output.data
+    const base = targetIdx[i] * TRS_STRIDE
+    let o
+    if (code === PATH_TRANSLATION) {
+      o = base
+      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
+    } else if (code === PATH_ROTATION) {
+      o = base + 3
+      slerp4(trs, o, out, t0 * 4, t1 * 4, f)
+    } else {
+      o = base + 7
+      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
+    }
+
+    if (blendSnap && i < blendSnap.count && blendSnap.path[i] === code) {
+      const s = i * 4
+      if (code === PATH_ROTATION) slerp4From(trs, o, blendSnap.vals, s, blend)
+      else lerp3From(trs, o, blendSnap.vals, s, blend)
+    }
+
+    if (snapshot) {
+      snapshot.path[i] = code
+      const s = i * 4
+      snapshot.vals[s] = trs[o]
+      snapshot.vals[s + 1] = trs[o + 1]
+      snapshot.vals[s + 2] = trs[o + 2]
+      snapshot.vals[s + 3] = code === PATH_ROTATION ? trs[o + 3] : 0
+    }
+  }
+}
+
+/** Overall [min, max] time of an animation, cached on it. */
+function animationTimeRange(anim) {
+  if (anim._tRange) return anim._tRange
+  let tMin = Infinity
+  let tMax = -Infinity
+  for (const c of anim.channels) {
+    const input = c.sampler.input
+    if (input.min[0] < tMin) tMin = input.min[0]
+    if (input.max[0] > tMax) tMax = input.max[0]
+  }
+  anim._tRange = [tMin, tMax]
+  return anim._tRange
+}
+
+
+const REQ_STRIDE = 8
+let graph = null
+// Per skin group: { positions: Float32Array(joints*3), radii: Float32Array(joints) }
+let groupRadii = null
+const tmp16 = new Float32Array(16)
+
+// ---- flat mat4 helpers on (array, offset) ----
+
+// out = parent * T * R * S in one pass (glMatrix's fromRotationTranslationScale
+// followed by a multiply, without the intermediate). parent may be null.
+function composeWorldAt(out, oo, parent, po, trs, to) {
+  const x = trs[to + 3], y = trs[to + 4], z = trs[to + 5], w = trs[to + 6]
+  const x2 = x + x, y2 = y + y, z2 = z + z
+  const xx = x * x2, xy = x * y2, xz = x * z2
+  const yy = y * y2, yz = y * z2, zz = z * z2
+  const wx = w * x2, wy = w * y2, wz = w * z2
+  const sx = trs[to + 7], sy = trs[to + 8], sz = trs[to + 9]
+  const l0 = (1 - (yy + zz)) * sx, l1 = (xy + wz) * sx, l2 = (xz - wy) * sx
+  const l4 = (xy - wz) * sy, l5 = (1 - (xx + zz)) * sy, l6 = (yz + wx) * sy
+  const l8 = (xz + wy) * sz, l9 = (yz - wx) * sz, l10 = (1 - (xx + yy)) * sz
+  const l12 = trs[to], l13 = trs[to + 1], l14 = trs[to + 2]
+  if (!parent) {
+    out[oo] = l0; out[oo + 1] = l1; out[oo + 2] = l2; out[oo + 3] = 0
+    out[oo + 4] = l4; out[oo + 5] = l5; out[oo + 6] = l6; out[oo + 7] = 0
+    out[oo + 8] = l8; out[oo + 9] = l9; out[oo + 10] = l10; out[oo + 11] = 0
+    out[oo + 12] = l12; out[oo + 13] = l13; out[oo + 14] = l14; out[oo + 15] = 1
+    return
+  }
+  const p0 = parent[po], p1 = parent[po + 1], p2 = parent[po + 2], p3 = parent[po + 3]
+  const p4 = parent[po + 4], p5 = parent[po + 5], p6 = parent[po + 6], p7 = parent[po + 7]
+  const p8 = parent[po + 8], p9 = parent[po + 9], p10 = parent[po + 10], p11 = parent[po + 11]
+  const p12 = parent[po + 12], p13 = parent[po + 13], p14 = parent[po + 14], p15 = parent[po + 15]
+  out[oo] = l0 * p0 + l1 * p4 + l2 * p8
+  out[oo + 1] = l0 * p1 + l1 * p5 + l2 * p9
+  out[oo + 2] = l0 * p2 + l1 * p6 + l2 * p10
+  out[oo + 3] = l0 * p3 + l1 * p7 + l2 * p11
+  out[oo + 4] = l4 * p0 + l5 * p4 + l6 * p8
+  out[oo + 5] = l4 * p1 + l5 * p5 + l6 * p9
+  out[oo + 6] = l4 * p2 + l5 * p6 + l6 * p10
+  out[oo + 7] = l4 * p3 + l5 * p7 + l6 * p11
+  out[oo + 8] = l8 * p0 + l9 * p4 + l10 * p8
+  out[oo + 9] = l8 * p1 + l9 * p5 + l10 * p9
+  out[oo + 10] = l8 * p2 + l9 * p6 + l10 * p10
+  out[oo + 11] = l8 * p3 + l9 * p7 + l10 * p11
+  out[oo + 12] = l12 * p0 + l13 * p4 + l14 * p8 + p12
+  out[oo + 13] = l12 * p1 + l13 * p5 + l14 * p9 + p13
+  out[oo + 14] = l12 * p2 + l13 * p6 + l14 * p10 + p14
+  out[oo + 15] = l12 * p3 + l13 * p7 + l14 * p11 + p15
+}
+
+// out = a * b (glMatrix mat4.multiply)
+function mul4At(out, oo, a, ao, b, bo) {
+  const a00 = a[ao], a01 = a[ao + 1], a02 = a[ao + 2], a03 = a[ao + 3]
+  const a10 = a[ao + 4], a11 = a[ao + 5], a12 = a[ao + 6], a13 = a[ao + 7]
+  const a20 = a[ao + 8], a21 = a[ao + 9], a22 = a[ao + 10], a23 = a[ao + 11]
+  const a30 = a[ao + 12], a31 = a[ao + 13], a32 = a[ao + 14], a33 = a[ao + 15]
+  let b0 = b[bo], b1 = b[bo + 1], b2 = b[bo + 2], b3 = b[bo + 3]
+  out[oo] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[oo + 1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[oo + 2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[oo + 3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+  b0 = b[bo + 4]; b1 = b[bo + 5]; b2 = b[bo + 6]; b3 = b[bo + 7]
+  out[oo + 4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[oo + 5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[oo + 6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[oo + 7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+  b0 = b[bo + 8]; b1 = b[bo + 9]; b2 = b[bo + 10]; b3 = b[bo + 11]
+  out[oo + 8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[oo + 9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[oo + 10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[oo + 11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+  b0 = b[bo + 12]; b1 = b[bo + 13]; b2 = b[bo + 14]; b3 = b[bo + 15]
+  out[oo + 12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[oo + 13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[oo + 14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[oo + 15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+}
+
+// glMatrix mat4.invert on (array, offset); leaves out untouched if singular
+function invert4At(out, oo, a, ao) {
+  const a00 = a[ao], a01 = a[ao + 1], a02 = a[ao + 2], a03 = a[ao + 3]
+  const a10 = a[ao + 4], a11 = a[ao + 5], a12 = a[ao + 6], a13 = a[ao + 7]
+  const a20 = a[ao + 8], a21 = a[ao + 9], a22 = a[ao + 10], a23 = a[ao + 11]
+  const a30 = a[ao + 12], a31 = a[ao + 13], a32 = a[ao + 14], a33 = a[ao + 15]
+  const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10
+  const b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12
+  const b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30
+  const b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32
+  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06
+  if (!det) return false
+  det = 1.0 / det
+  out[oo] = (a11 * b11 - a12 * b10 + a13 * b09) * det
+  out[oo + 1] = (a02 * b10 - a01 * b11 - a03 * b09) * det
+  out[oo + 2] = (a31 * b05 - a32 * b04 + a33 * b03) * det
+  out[oo + 3] = (a22 * b04 - a21 * b05 - a23 * b03) * det
+  out[oo + 4] = (a12 * b08 - a10 * b11 - a13 * b07) * det
+  out[oo + 5] = (a00 * b11 - a02 * b08 + a03 * b07) * det
+  out[oo + 6] = (a32 * b02 - a30 * b05 - a33 * b01) * det
+  out[oo + 7] = (a20 * b05 - a22 * b02 + a23 * b01) * det
+  out[oo + 8] = (a10 * b10 - a11 * b08 + a13 * b06) * det
+  out[oo + 9] = (a01 * b08 - a00 * b10 - a03 * b06) * det
+  out[oo + 10] = (a30 * b04 - a31 * b02 + a33 * b00) * det
+  out[oo + 11] = (a21 * b02 - a20 * b04 - a23 * b00) * det
+  out[oo + 12] = (a11 * b07 - a10 * b09 - a12 * b06) * det
+  out[oo + 13] = (a00 * b09 - a01 * b07 + a02 * b06) * det
+  out[oo + 14] = (a31 * b01 - a30 * b03 - a32 * b00) * det
+  out[oo + 15] = (a20 * b03 - a21 * b01 + a22 * b00) * det
+  return true
+}
+
+/**
+ * Shared, immutable description of the model graph in index form. Built once
+ * per worker from the payload; records only hold per-instance numbers.
+ */
+function buildGraph(g) {
+  const nodes = g.nodes || []
+  const n = nodes.length
+  const idxOf = new Map()
+  for (let i = 0; i < n; i++) idxOf.set(nodes[i], i)
+  const parentIdx = new Int32Array(n).fill(-1)
+  const order = []
+  const walk = (node, from) => {
+    const i = idxOf.get(node)
+    if (i === undefined) return
+    if (from >= 0 && parentIdx[i] < 0) parentIdx[i] = from
+    order.push(i)
+    if (node.children) for (const c of node.children) walk(c, i)
+  }
+  const roots = (g.scene && g.scene.nodes) || []
+  for (const r of roots) walk(r, -1)
+
+  // Static = no animation targets it or any ancestor: world matrix is constant.
+  const animated = new Uint8Array(n)
+  for (const a of g.animations || []) {
+    prepareAnimation(a, idxOf)
+    for (let i = 0; i < a._targetIdx.length; i++) if (a._targetIdx[i] >= 0) animated[a._targetIdx[i]] = 1
+  }
+  const isStatic = new Uint8Array(n)
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k]
+    const p = parentIdx[i]
+    isStatic[i] = !animated[i] && (p < 0 || isStatic[p]) ? 1 : 0
+  }
+
+  const unskinned = []
+  for (let i = 0; i < n; i++) if (nodes[i].mesh && !nodes[i].skin) unskinned.push(i)
+
+  const groups = []
+  const byKey = new Map()
+  for (const sn of g.skinnedNodes || []) {
+    const i = idxOf.get(sn)
+    const p = parentIdx[i]
+    const key =
+      p + "|" + (sn.translation || [0, 0, 0]).join(",") + "|" + (sn.scale || [1, 1, 1]).join(",") +
+      "|" + sn.skin.joints.map((j) => idxOf.get(j)).join(",")
+    let grp = byKey.get(key)
+    if (!grp) {
+      const joints = new Int32Array(sn.skin.joints.map((j) => idxOf.get(j)))
+      const invBind = new Float32Array(joints.length * 16)
+      for (let j = 0; j < joints.length; j++) {
+        const ib = sn.skin.joints[j].invBindMatrix
+        for (let q = 0; q < 16; q++) invBind[j * 16 + q] = ib ? ib[q] : q % 5 === 0 ? 1 : 0
+      }
+      grp = { head: i, nodes: [], joints, invBind }
+      byKey.set(key, grp)
+      groups.push(grp)
+    }
+    grp.nodes.push(i)
+  }
+  let floats = unskinned.length * 16
+  for (const grp of groups) floats += (grp.joints.length + 1) * 16
+  const boundsOffset = floats
+  floats += 8
+
+  const baseTRS = initTRS(new Float32Array(n * TRS_STRIDE), nodes)
+  const rootIdx = roots.length ? idxOf.get(roots[0]) : -1
+  return {
+    n, nodes, idxOf, parentIdx, order: new Int32Array(order), isStatic,
+    unskinned: new Int32Array(unskinned), groups, floats, boundsOffset, baseTRS, rootIdx,
+  }
+}
+
+function createBatchRecord() {
+  const record = freshInstanceState()
+  record.gltf = sharedGltf // legacy handlers (enableNode) read module state from here
+  record.trs = new Float32Array(graph.baseTRS)
+  record.mat = new Float32Array(graph.n * 16)
+  record.matValid = new Uint8Array(graph.n)
+  record.inv = new Float32Array(graph.groups.length * 16)
+  record.invValid = new Uint8Array(graph.groups.length)
+  record.sampler = createSamplerState(sharedGltf.animations)
+  return record
+}
+
+function computePose(rec, out, base) {
+  const order = graph.order
+  const parentIdx = graph.parentIdx
+  const isStatic = graph.isStatic
+  const mat = rec.mat
+  const trs = rec.trs
+  const valid = rec.matValid
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k]
+    if (isStatic[i] && valid[i]) continue
+    const p = parentIdx[i]
+    composeWorldAt(mat, i * 16, p < 0 ? null : mat, p * 16, trs, i * TRS_STRIDE)
+    if (isStatic[i]) valid[i] = 1
+  }
+  let k = base
+  const unskinned = graph.unskinned
+  for (let u = 0; u < unskinned.length; u++, k += 16) {
+    const o = unskinned[u] * 16
+    for (let q = 0; q < 16; q++) out[k + q] = mat[o + q]
+  }
+  // Root transform (legacy "parentMatrix"): the scene's first root node's TRS
+  if (graph.rootIdx >= 0) composeWorldAt(tmp16, 0, null, 0, trs, graph.rootIdx * TRS_STRIDE)
+  else for (let q = 0; q < 16; q++) tmp16[q] = q % 5 === 0 ? 1 : 0
+  const groups = graph.groups
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi]
+    const head = grp.head
+    if (!(isStatic[head] && rec.invValid[gi])) {
+      invert4At(rec.inv, gi * 16, mat, head * 16)
+      if (isStatic[head]) rec.invValid[gi] = 1
+    }
+    const joints = grp.joints
+    const invBind = grp.invBind
+    for (let j = 0; j < joints.length; j++, k += 16) {
+      // bone = inv(head) * world(joint) * invBind(joint)
+      mul4At(out, k, rec.inv, gi * 16, mat, joints[j] * 16)
+      mul4At(out, k, out, k, invBind, j * 16)
+    }
+    for (let q = 0; q < 16; q++) out[k + q] = tmp16[q]
+    k += 16
+  }
+  computePosedBounds(rec, out, base)
+}
+
+// Reads the bone matrices computePose just wrote into `out`, so no matrix maths
+// is repeated: per joint one transform of the bind position and three column
+// lengths for the radius scale.
+function computePosedBounds(rec, out, base) {
+  const at = base + graph.boundsOffset
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+  const groups = graph.groups
+  const disabled = rec.disabledNodes
+  const nodes = graph.nodes
+  let m = base + graph.unskinned.length * 16
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi]
+    const nJoints = grp.joints.length
+    const rad = groupRadii && groupRadii[gi]
+    // The bounds of a skin do not depend on which parts show; only a fully
+    // hidden group drops out.
+    let anyEnabled = false
+    if (rad && disabled.size) {
+      for (let i = 0; i < grp.nodes.length; i++) if (!disabled.get(nodes[grp.nodes[i]].name)) { anyEnabled = true; break }
+    } else anyEnabled = !!rad
+    if (!anyEnabled) {
+      m += (nJoints + 1) * 16
+      continue
+    }
+    const pos = rad.positions
+    const radii = rad.radii
+    for (let j = 0; j < nJoints; j++, m += 16) {
+      const px = pos[j * 3], py = pos[j * 3 + 1], pz = pos[j * 3 + 2]
+      const cx = out[m] * px + out[m + 4] * py + out[m + 8] * pz + out[m + 12]
+      const cy = out[m + 1] * px + out[m + 5] * py + out[m + 9] * pz + out[m + 13]
+      const cz = out[m + 2] * px + out[m + 6] * py + out[m + 10] * pz + out[m + 14]
+      const sx = Math.hypot(out[m], out[m + 1], out[m + 2])
+      const sy = Math.hypot(out[m + 4], out[m + 5], out[m + 6])
+      const sz = Math.hypot(out[m + 8], out[m + 9], out[m + 10])
+      const r = radii[j] * Math.max(sx, sy, sz)
+      if (cx - r < minX) minX = cx - r
+      if (cy - r < minY) minY = cy - r
+      if (cz - r < minZ) minZ = cz - r
+      if (cx + r > maxX) maxX = cx + r
+      if (cy + r > maxY) maxY = cy + r
+      if (cz + r > maxZ) maxZ = cz + r
+    }
+    m += 16 // root transform slot
+  }
+  if (minX === Infinity) {
+    out[at] = NaN
+    return
+  }
+  out[at] = minX; out[at + 1] = minY; out[at + 2] = minZ
+  out[at + 3] = maxX; out[at + 4] = maxY; out[at + 5] = maxZ
+}
+
+function onBatch(e) {
+  const count = e.data.count
+  const reqBuf = e.data.req
+  const req = new Float64Array(reqBuf)
+  const need = count * graph.floats * 4
+  let out = e.data.out
+  if (!out || out.byteLength < need) out = new ArrayBuffer(Math.max(need, 64))
+  const outF = new Float32Array(out)
+  const anims = sharedGltf.animations || []
+  for (let i = 0; i < count; i++) {
+    const b = i * REQ_STRIDE
+    const rec = instances.get(req[b])
+    if (!rec) continue
+    const animIndex = req[b + 1]
+    if (animIndex >= 0) {
+      const anim = anims[animIndex]
+      if (anim) sampleAnimation(rec.sampler, anim, animIndex, req[b + 2], req[b + 3], req[b + 4], req[b + 5] !== 0, rec.trs)
+    }
+    computePose(rec, outF, i * graph.floats)
+  }
+  const msg = { type: "batchResult", count, req: reqBuf, out }
+  msgPort.postMessage(msg, [reqBuf, out])
+}
+
 function initEventListeners(e) {
   if (e.data && e.data["type"] === "construct-worker-init") {
     msgPort = e.data["port2"]
@@ -179,6 +826,8 @@ function OnMessage(e) {
       buffBonesLength = e.data.buffBonesLength
       drawMeshes = e.data.drawMeshes
       normalizeAttributeStubs()
+      graph = buildGraph(sharedGltf)
+      groupRadii = e.data.groupRadii || null
       if (!e.data.shared) {
         // Legacy single-instance worker: one record mutating the received graph directly
         const record = freshInstanceState()
@@ -187,7 +836,10 @@ function OnMessage(e) {
       }
       break
     case "addInstance":
-      instances.set(e.data.iid, createRecordFromShared())
+      instances.set(e.data.iid, createBatchRecord())
+      break
+    case "batch":
+      onBatch(e)
       break
     case "removeInstance":
       instances.delete(e.data.iid)
@@ -271,6 +923,8 @@ function release() {
   disabledNodes.clear()
   instances.clear()
   sharedGltf = null
+  graph = null
+  groupRadii = null
   currentRecord = null
   // @ts-ignore
   activeNodes = null

@@ -1,3 +1,4 @@
+"use strict";
 // @ts-nocheck
 const MAX_BONES = 256;
 // REMOVED: const BONE_UBO_BINDING_POINT = 0;
@@ -6,6 +7,8 @@ class BoneBufferTop {
   // Static properties for shared resources
   static BONE_UBO_BINDING_POINT = 0;
   static dummyUBO = null;
+  // shared UBO -> BoneBuffer whose bones it currently holds
+  static _lastUploaded = new WeakMap();
   static _DUMMY_UBO_SIZE = MAX_BONES * 16 * 4; // Size for MAX_BONES matrices * 16 floats/matrix * 4 bytes/float
 
   // Static method to get or create the dummy UBO
@@ -45,12 +48,21 @@ class BoneBufferTop {
       }
   }
 
-  constructor(renderer, bonesInThisModel, skinAnimation = false) {
+  /**
+   * @param ownUbo When true this buffer uploads its bones into a UBO of its own,
+   *   once per change, and later draws only rebind it. The worker path draws a
+   *   character as 20+ primitives; re-filling the shared model UBO before each
+   *   one was 23 bufferSubData per instance per frame for identical data.
+   */
+  constructor(renderer, bonesInThisModel, skinAnimation = false, ownUbo = false) {
     this.gl = renderer._gl;
     this.rendererForShaderAccess = renderer; // For _batchState access
     this.skinAnimation = skinAnimation;
     this.bonesLoaded = false;
     this.blockIndex = -1;
+    this.ownUbo = !!ownUbo;
+    this.dirty = true;
+    this._released = false;
 
     if (skinAnimation) {
       this.bonesPerModelAsset = bonesInThisModel > 0 ? bonesInThisModel : 1; // Ensure at least 1 to avoid zero-size array if bonesInThisModel is 0
@@ -75,9 +87,14 @@ class BoneBufferTop {
   }
 
   release() {
-    // No UBO to delete here, as it doesn't own one for skinning.
-    // The shared UBO is managed by gltfData.
-    
+    // Shared by every node of a skin group, so this can be reached more than once.
+    if (this._released) return;
+    this._released = true;
+    if (this.ubo && this.gl) {
+      this.gl.deleteBuffer(this.ubo);
+    }
+    this.ubo = null;
+
     this.bones = null;
     this.nodeXform = null;
     this.rootNodeXform = null;
@@ -119,6 +136,7 @@ class BoneBufferTop {
       const offset = jointIndex * 16;
       this.bones.set(matrix, offset); 
       this.bonesLoaded = true;
+      this.dirty = true;
     } else if (this.skinAnimation && jointIndex >= this.bonesPerModelAsset) {
         console.warn(`BoneBuffer: Joint index ${jointIndex} exceeds bonesPerModelAsset (${this.bonesPerModelAsset}).`);
     } else if (this.skinAnimation) {
@@ -129,30 +147,41 @@ class BoneBufferTop {
   setBones(matrices) {
     if (this.bones && this.skinAnimation) {
         const numMatricesToCopy = Math.min(matrices.length / 16, this.bonesPerModelAsset);
-        if (numMatricesToCopy * 16 < matrices.length) {
-            // console.warn(`BoneBuffer: Input matrices count (${matrices.length / 16}) exceeds bonesPerModelAsset (${this.bonesPerModelAsset}). Truncating.`);
-        }
         this.bones.set(matrices.subarray(0, numMatricesToCopy * 16));
         this.bonesLoaded = true; 
+        this.dirty = true;
     } else if (this.skinAnimation) {
       console.warn("BoneBuffer: Attempt to set bones, but no bones array allocated or not skinning.");
     }
   }
 
+  /** Copy `floats` bone floats from `src` starting at `offset`. */
+  setBonesFrom(src, offset, floats) {
+    if (!this.bones || !this.skinAnimation) return;
+    const n = Math.min(floats, this.bones.length);
+    this.bones.set(src.subarray(offset, offset + n));
+    this.bonesLoaded = true;
+    this.dirty = true;
+  }
+
   setRootNodeXform(matrix) {
     if (this.rootNodeXform) {
       this.rootNodeXform.set(matrix)
-    } else {
-      // console.warn("BoneBuffer: No rootNodeXform array allocated") // Can be noisy if called for non-skinned
     }
+  }
+
+  setRootNodeXformFrom(src, offset) {
+    if (this.rootNodeXform) this.rootNodeXform.set(src.subarray(offset, offset + 16))
   }
 
   setNodeXform(matrix) {
     if (this.nodeXform) {
       this.nodeXform.set(matrix)
-    } else {
-      // console.warn("BoneBuffer: No nodeXform array allocated") // Can be noisy if called for skinned
     }
+  }
+
+  setNodeXformFrom(src, offset) {
+    if (this.nodeXform) this.nodeXform.set(src.subarray(offset, offset + 16))
   }
 
   uploadUniforms(targetSharedGpuUbo) {
@@ -180,12 +209,36 @@ class BoneBufferTop {
     }
     
     if (this.blockIndex !== -1 && this.blockIndex !== null) { // Proceed only if block index is valid for skinning shader
-        if (targetSharedGpuUbo && this.bones) {
-            gl.bindBuffer(gl.UNIFORM_BUFFER, targetSharedGpuUbo);
-            gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones); // Upload the entire instance-specific bone data
-            gl.bindBuffer(gl.UNIFORM_BUFFER, null); // Unbind from the general binding point
-
-            // Bind the UBO to the specific binding point for this draw call
+        if (this.ownUbo && this.bones) {
+            // Own UBO: upload once per change, rebind per draw. The block is
+            // declared for MAX_BONES, and a bound range smaller than the block
+            // is an INVALID_OPERATION at draw time, so allocate the full size.
+            if (!this.ubo) {
+                this.ubo = gl.createBuffer();
+                gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
+                gl.bufferData(gl.UNIFORM_BUFFER, MAX_BONES * 16 * 4, gl.DYNAMIC_DRAW);
+                gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+                this.dirty = true;
+            }
+            if (this.dirty) {
+                gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
+                gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones);
+                gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+                this.dirty = false;
+            }
+            gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, this.ubo);
+        } else if (targetSharedGpuUbo && this.bones) {
+            // Shared model UBO. An instance's primitives draw back to back, so
+            // re-filling it before each one uploaded the same bones 20+ times
+            // per character per frame. Upload only when the buffer's last
+            // occupant is not this instance or the bones changed.
+            if (BoneBufferTop._lastUploaded.get(targetSharedGpuUbo) !== this || this.dirty) {
+                gl.bindBuffer(gl.UNIFORM_BUFFER, targetSharedGpuUbo);
+                gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones);
+                gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+                BoneBufferTop._lastUploaded.set(targetSharedGpuUbo, this);
+                this.dirty = false;
+            }
             gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, targetSharedGpuUbo);
         } else if (!targetSharedGpuUbo) {
             console.warn("BoneBuffer (Skinned Path): Shader expects 'Bones' UBO, but no targetSharedGpuUbo provided. Binding dummy.");
@@ -203,17 +256,20 @@ class BoneBufferTop {
     // --- End UBO Handling ---
 
     // --- Other Uniforms (Instance Specific) ---
-    if (this.locUSkinEnable === null || true) {
+    if (this.locUSkinEnable === undefined || this._locProgram !== shaderProgram) {
+      // The `|| true` this replaced forced a getUniformLocation for every
+      // uniform on every skinned draw - 513 ms of the animated profile, all of
+      // it re-deriving constants. Locations only change if the program does.
+      this._locProgram = shaderProgram;
       this.locUSkinEnable = gl.getUniformLocation(shaderProgram, "uSkinEnable");
       this.locARootNodeXform = gl.getUniformLocation(shaderProgram, "uRootNodeXform");
     }
 
-    // Raw writes, then invalidate: these must land on every skinned draw, and
-    // the invalidation stops the value cache believing a stale value later.
+    // Raw writes, then invalidate. These must land on every skinned draw;
+    // routing them through the value cache lets a "same value" check skip a
+    // per-draw skinning flag, and skinning silently stops applying.
     if (this.locUSkinEnable) gl.uniform1f(this.locUSkinEnable, 1.0); // Enable skinning
-    if (this.locARootNodeXform && this.rootNodeXform) {
-      gl.uniformMatrix4fv(this.locARootNodeXform, false, this.rootNodeXform);
-    }
+    if (this.locARootNodeXform && this.rootNodeXform) gl.uniformMatrix4fv(this.locARootNodeXform, false, this.rootNodeXform);
     const locInstanced = globalThis.uniformCache.getLocation(gl, shaderProgram, "uInstancedEnable");
     if (locInstanced) gl.uniform1f(locInstanced, 0.0);
     globalThis.uniformCache.invalidate(shaderProgram, "uSkinEnable");
@@ -247,7 +303,8 @@ class BoneBufferTop {
     // --- End Dummy UBO Handling ---
 
     // --- Other Uniforms for Non-Skinned Path ---
-    if (this.locUSkinEnable === null || true) {
+    if (this.locUSkinEnable === undefined || this._locProgram !== shaderProgram) {
+      this._locProgram = shaderProgram;
       this.locUSkinEnable = gl.getUniformLocation(shaderProgram, "uSkinEnable");
       this.locUNodeXformEnable = gl.getUniformLocation(shaderProgram, "uNodeXformEnable");
       this.locANodeXform = gl.getUniformLocation(shaderProgram, "uNodeXform");
@@ -265,6 +322,7 @@ class BoneBufferTop {
   }
 
 }
+
 
 // @ts-ignore
 if (!globalThis.BoneBuffer) {

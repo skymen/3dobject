@@ -1,5 +1,312 @@
 // @ts-check
 "use strict"
+// Keyframe sampler shared with the worker (verbatim copy in gltfWorker.js;
+// KEEP IN SYNC). Index-based: targets are node indices and transforms go into
+// a flat per-instance Float32Array, so every instance shares one animation list.
+const AnimSampler = (() => {
+//
+// KEEP IN SYNC with the copy in files/gltfWorker.js (the worker is a plain
+// script that the build copies verbatim, so it cannot import this module).
+//
+// Design goals, in order:
+//   1. No per-instance copy of the animation data. Targets are NODE INDICES
+//      and the sampled transforms go into a flat per-instance Float32Array
+//      (TRS_STRIDE floats per node: translation, rotation, scale), so every
+//      instance shares one animation list. Cloning the channels per instance
+//      was ~2,900 objects per character per thread.
+//   2. No allocation per call. The old sampler minted four typed-array views
+//      per channel per frame plus an object and a clone per channel for the
+//      blend snapshot.
+//   3. No linear scan. A per-channel cursor steps forward from where it was
+//      last frame and only falls back to a binary search on a seek.
+//
+// The blend snapshot is stored per channel index as a path code plus four
+// floats, matching the old behaviour where a blend compared channel i of the
+// new animation with channel i of the previous one.
+
+const TRS_STRIDE = 10 // t(3) r(4) s(3)
+const PATH_NONE = 0
+const PATH_TRANSLATION = 1
+const PATH_ROTATION = 2
+const PATH_SCALE = 3
+const PATH_WEIGHTS = 4
+
+function pathCode(path) {
+  if (path === "translation") return PATH_TRANSLATION
+  if (path === "rotation") return PATH_ROTATION
+  if (path === "scale") return PATH_SCALE
+  if (path === "weights") return PATH_WEIGHTS
+  return PATH_NONE
+}
+
+/**
+ * Per-animation target table, cached on the (shared) animation object:
+ * node index and path code per channel. `nodeIndexOf` maps the node objects
+ * the channels reference to their index in the node list.
+ */
+function prepareAnimation(anim, nodeIndexOf) {
+  if (anim._targetIdx) return anim
+  const n = anim.channels.length
+  const idx = new Int32Array(n)
+  const codes = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    const c = anim.channels[i]
+    const node = c.target.node
+    const k = node ? nodeIndexOf.get(node) : undefined
+    idx[i] = k === undefined ? -1 : k
+    codes[i] = idx[i] < 0 ? PATH_NONE : pathCode(c.target.path)
+  }
+  anim._targetIdx = idx
+  anim._pathCodes = codes
+  return anim
+}
+
+/** Fill `trs` from a node list (skinned nodes get identity rotation). */
+function initTRS(trs, nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]
+    const o = i * TRS_STRIDE
+    const t = n.translation || [0, 0, 0]
+    const r = n.skin ? [0, 0, 0, 1] : n.rotation || [0, 0, 0, 1]
+    const s = n.scale || [1, 1, 1]
+    trs[o] = t[0]; trs[o + 1] = t[1]; trs[o + 2] = t[2]
+    trs[o + 3] = r[0]; trs[o + 4] = r[1]; trs[o + 5] = r[2]; trs[o + 6] = r[3]
+    trs[o + 7] = s[0]; trs[o + 8] = s[1]; trs[o + 9] = s[2]
+  }
+  return trs
+}
+
+/** Per-instance sampler state. `animations` is the shared animation list. */
+function createSamplerState(animations) {
+  let maxChannels = 0
+  for (const a of animations || []) if (a.channels.length > maxChannels) maxChannels = a.channels.length
+  const mkSnap = () => ({ count: 0, path: new Uint8Array(maxChannels), vals: new Float32Array(maxChannels * 4) })
+  return {
+    blendState: "init",
+    blendTime: 0,
+    lastIndex: 0,
+    lastTargetIndex: 0,
+    snaps: [mkSnap(), mkSnap()],
+    blendSnap: null,
+    cursors: new Map(),
+  }
+}
+
+function lerp3(out, o, arr, i0, i1, t) {
+  out[o] = arr[i0] + t * (arr[i1] - arr[i0])
+  out[o + 1] = arr[i0 + 1] + t * (arr[i1 + 1] - arr[i0 + 1])
+  out[o + 2] = arr[i0 + 2] + t * (arr[i1 + 2] - arr[i0 + 2])
+}
+
+// glMatrix quat.slerp, reading both endpoints straight out of the flat array.
+function slerp4(out, o, arr, i0, i1, t) {
+  const ax = arr[i0], ay = arr[i0 + 1], az = arr[i0 + 2], aw = arr[i0 + 3]
+  let bx = arr[i1], by = arr[i1 + 1], bz = arr[i1 + 2], bw = arr[i1 + 3]
+  let cosom = ax * bx + ay * by + az * bz + aw * bw
+  if (cosom < 0) {
+    cosom = -cosom
+    bx = -bx; by = -by; bz = -bz; bw = -bw
+  }
+  let scale0, scale1
+  if (1 - cosom > 0.000001) {
+    const omega = Math.acos(cosom)
+    const sinom = Math.sin(omega)
+    scale0 = Math.sin((1 - t) * omega) / sinom
+    scale1 = Math.sin(t * omega) / sinom
+  } else {
+    scale0 = 1 - t
+    scale1 = t
+  }
+  out[o] = scale0 * ax + scale1 * bx
+  out[o + 1] = scale0 * ay + scale1 * by
+  out[o + 2] = scale0 * az + scale1 * bz
+  out[o + 3] = scale0 * aw + scale1 * bw
+}
+
+// Same shapes, blending the value already in out[o..] FROM a snapshot value.
+function lerp3From(out, o, snap, s, t) {
+  out[o] = snap[s] + t * (out[o] - snap[s])
+  out[o + 1] = snap[s + 1] + t * (out[o + 1] - snap[s + 1])
+  out[o + 2] = snap[s + 2] + t * (out[o + 2] - snap[s + 2])
+}
+function slerp4From(out, o, snap, s, t) {
+  const ax = snap[s], ay = snap[s + 1], az = snap[s + 2], aw = snap[s + 3]
+  let bx = out[o], by = out[o + 1], bz = out[o + 2], bw = out[o + 3]
+  let cosom = ax * bx + ay * by + az * bz + aw * bw
+  if (cosom < 0) {
+    cosom = -cosom
+    bx = -bx; by = -by; bz = -bz; bw = -bw
+  }
+  let scale0, scale1
+  if (1 - cosom > 0.000001) {
+    const omega = Math.acos(cosom)
+    const sinom = Math.sin(omega)
+    scale0 = Math.sin((1 - t) * omega) / sinom
+    scale1 = Math.sin(t * omega) / sinom
+  } else {
+    scale0 = 1 - t
+    scale1 = t
+  }
+  out[o] = scale0 * ax + scale1 * bx
+  out[o + 1] = scale0 * ay + scale1 * by
+  out[o + 2] = scale0 * az + scale1 * bz
+  out[o + 3] = scale0 * aw + scale1 * bw
+}
+
+function findKeyframe(times, t, cursor) {
+  const last = times.length - 2
+  let t0 = cursor
+  if (t0 < 0) t0 = 0
+  if (t0 > last) t0 = last
+  if (t < times[t0]) {
+    // Seek backwards (loop wrap, animation change): binary search.
+    let lo = 0
+    let hi = t0
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (times[mid] <= t) lo = mid
+      else hi = mid - 1
+    }
+    t0 = lo
+  } else {
+    while (t0 < last && t > times[t0 + 1]) t0++
+  }
+  return t0
+}
+
+/**
+ * Sample `anim` (prepared with prepareAnimation) at `time` into `trs`, with
+ * the blend state machine and cross-animation blending of the original
+ * implementation. Morph-target weight channels are ignored: the worker path
+ * never rendered morphs.
+ */
+function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, animationLoop, trs) {
+  // Blend state machine
+  switch (state.blendState) {
+    case "init":
+      if (animationBlend != 0 && state.lastIndex != index) {
+        state.blendState = "blend"
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+      }
+      break
+    case "blend":
+      if (state.lastIndex != index) {
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+        break
+      }
+      if (state.blendTime > animationBlend) {
+        state.blendState = "idle"
+        break
+      }
+      state.blendTime += deltaTime
+      break
+    case "idle":
+      if (state.lastIndex != index) {
+        state.blendState = "blend"
+        state.blendTime = 0
+        state.blendSnap = state.snaps[state.lastTargetIndex]
+        state.lastTargetIndex = state.lastTargetIndex == 0 ? 1 : 0
+        state.lastIndex = index
+      }
+      break
+    default:
+      state.blendState = "init"
+  }
+
+  const channels = anim.channels
+  const n = channels.length
+  const targetIdx = anim._targetIdx
+  const codes = anim._pathCodes
+  let cursors = state.cursors.get(index)
+  if (!cursors) {
+    cursors = new Int32Array(n)
+    state.cursors.set(index, cursors)
+  }
+
+  const blending = state.blendState === "blend" && state.blendSnap
+  const blendSnap = blending ? state.blendSnap : null
+  let blend = 0
+  if (blending) {
+    blend = state.blendTime == 0 ? 0 : state.blendTime / animationBlend
+    if (blend > 1) blend = 1
+  }
+  const snapshot = animationBlend != 0 ? state.snaps[state.lastTargetIndex] : null
+  if (snapshot) snapshot.count = n
+
+  for (let i = 0; i < n; i++) {
+    const code = codes[i]
+    const c = channels[i]
+    const input = c.sampler.input
+    const tMin = input.min[0]
+    const tMax = input.max[0]
+    if (tMax == tMin || code === PATH_NONE || code === PATH_WEIGHTS) {
+      if (snapshot) snapshot.path[i] = PATH_NONE
+      continue
+    }
+    let t = time
+    if (animationLoop) t = ((t - tMin) % (tMax - tMin)) + tMin
+    else if (t > tMax) t = tMax - 0.01
+
+    const times = input.data
+    const t0 = findKeyframe(times, t, cursors[i])
+    cursors[i] = t0
+    const t1 = t0 + 1
+    const span = times[t1] - times[t0]
+    const f = span > 0 ? (t - times[t0]) / span : 0
+
+    const out = c.sampler.output.data
+    const base = targetIdx[i] * TRS_STRIDE
+    let o
+    if (code === PATH_TRANSLATION) {
+      o = base
+      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
+    } else if (code === PATH_ROTATION) {
+      o = base + 3
+      slerp4(trs, o, out, t0 * 4, t1 * 4, f)
+    } else {
+      o = base + 7
+      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
+    }
+
+    if (blendSnap && i < blendSnap.count && blendSnap.path[i] === code) {
+      const s = i * 4
+      if (code === PATH_ROTATION) slerp4From(trs, o, blendSnap.vals, s, blend)
+      else lerp3From(trs, o, blendSnap.vals, s, blend)
+    }
+
+    if (snapshot) {
+      snapshot.path[i] = code
+      const s = i * 4
+      snapshot.vals[s] = trs[o]
+      snapshot.vals[s + 1] = trs[o + 1]
+      snapshot.vals[s + 2] = trs[o + 2]
+      snapshot.vals[s + 3] = code === PATH_ROTATION ? trs[o + 3] : 0
+    }
+  }
+}
+
+/** Overall [min, max] time of an animation, cached on it. */
+function animationTimeRange(anim) {
+  if (anim._tRange) return anim._tRange
+  let tMin = Infinity
+  let tMax = -Infinity
+  for (const c of anim.channels) {
+    const input = c.sampler.input
+    if (input.min[0] < tMin) tMin = input.min[0]
+    if (input.max[0] > tMax) tMax = input.max[0]
+  }
+  anim._tRange = [tMin, tMax]
+  return anim._tRange
+}
+
+  return { TRS_STRIDE, PATH_NONE, pathCode, prepareAnimation, initTRS, createSamplerState, sampleAnimation, animationTimeRange }
+})()
 
 /**
  * Attribute data is immutable and shared between instances, so a conversion
@@ -27,6 +334,20 @@ const ObjectBufferW = globalThis.ObjectBuffer
 // One animation worker shared by all instances of an object type (used when GPU
 // skinning is known at creation time). Owns the message port and dispatches worker
 // replies to the registered GltfModelW instances by instance id.
+// Request slot layout, shared with the worker (see files/gltfWorker.js).
+const REQ_STRIDE = 8
+
+/**
+ * One animation worker shared by all instances of an object type. Owns the
+ * message port and, since the batched protocol, the per-frame request:
+ * instances queue their update during the tick and one message goes out per
+ * frame carrying all of them; one reply comes back carrying every pose.
+ *
+ * Flushing happens in a microtask, i.e. as soon as the synchronous tick that
+ * queued the first request finishes. At most one batch is in flight; requests
+ * queued while it is are merged (latest per instance wins) and sent the moment
+ * the reply lands, so the worker never idles and latency stays at one frame.
+ */
 class GltfWorkerHostTop {
   constructor() {
     this.msgPort = null
@@ -35,6 +356,13 @@ class GltfWorkerHostTop {
     this.gltfSent = false
     this.attributesSent = false
     this.released = false
+    this.poseFloats = 0
+    this.pending = new Map() // model -> request
+    this.slots = [] // models in the in-flight batch, by slot
+    this.inFlight = false
+    this.flushScheduled = false
+    this.reqBuf = null
+    this.outBuf = null
   }
 
   async getPort(runtime) {
@@ -50,7 +378,12 @@ class GltfWorkerHostTop {
         }
         this.msgPort = port
         port.onmessage = (e) => {
-          const model = this.instances.get(e.data ? e.data.iid : undefined)
+          if (!e.data) return
+          if (e.data.type === "batchResult") {
+            this._onBatchResult(e.data)
+            return
+          }
+          const model = this.instances.get(e.data.iid)
           if (model) model.onWorkerMessage(e)
         }
         port.onmessageerror = (e) => console.error("[3DObject] worker message error", e)
@@ -70,12 +403,90 @@ class GltfWorkerHostTop {
   }
 
   remove(iid) {
+    const model = this.instances.get(iid)
+    if (model) this.pending.delete(model)
     this.instances.delete(iid)
     if (this.msgPort) this.msgPort.postMessage({ type: "removeInstance", iid })
   }
 
+  /** Queue this frame's request for `model`; a later queue in the same frame replaces it. */
+  queue(model, animIndex, time, deltaTime, blend, loop) {
+    let r = this.pending.get(model)
+    if (!r) {
+      r = { animIndex: 0, time: 0, deltaTime: 0, blend: 0, loop: 1 }
+      this.pending.set(model, r)
+    } else if (r.animIndex >= 0 && animIndex < 0) {
+      // A pose-only request must not cancel a sampling request queued earlier.
+      return
+    }
+    r.animIndex = animIndex
+    r.time = time
+    r.deltaTime = deltaTime
+    r.blend = blend
+    r.loop = loop
+    if (!this.inFlight && !this.flushScheduled) {
+      this.flushScheduled = true
+      queueMicrotask(() => {
+        this.flushScheduled = false
+        this.flush()
+      })
+    }
+  }
+
+  flush() {
+    if (this.inFlight || this.released || !this.msgPort || this.pending.size === 0 || !this.poseFloats) return
+    const count = this.pending.size
+    const floats = count * REQ_STRIDE
+    if (!this.reqBuf || this.reqBuf.byteLength < floats * 8) {
+      this.reqBuf = new ArrayBuffer(Math.max(floats, 64 * REQ_STRIDE) * 8)
+    }
+    const req = new Float64Array(this.reqBuf, 0, floats)
+    const slots = this.slots
+    slots.length = 0
+    let i = 0
+    for (const [model, r] of this.pending) {
+      const b = i * REQ_STRIDE
+      req[b] = model._iid
+      req[b + 1] = r.animIndex
+      req[b + 2] = r.time
+      req[b + 3] = r.deltaTime
+      req[b + 4] = r.blend
+      req[b + 5] = r.loop
+      slots.push(model)
+      i++
+    }
+    this.pending.clear()
+    const outNeed = count * this.poseFloats * 4
+    let out = this.outBuf
+    if (!out || out.byteLength < outNeed) out = new ArrayBuffer(Math.max(outNeed, 64))
+    this.outBuf = null
+    const reqBuf = this.reqBuf
+    this.reqBuf = null
+    this.inFlight = true
+    this.msgPort.postMessage({ type: "batch", count, req: reqBuf, out }, [reqBuf, out])
+  }
+
+  _onBatchResult(data) {
+    this.inFlight = false
+    this.reqBuf = data.req
+    this.outBuf = data.out
+    const out = new Float32Array(data.out)
+    const slots = this.slots
+    const count = Math.min(data.count, slots.length)
+    for (let i = 0; i < count; i++) {
+      const model = slots[i]
+      // Destroyed since the request went out
+      if (!model || model.released || this.instances.get(model._iid) !== model) continue
+      model.applyPose(out, i * this.poseFloats)
+    }
+    slots.length = 0
+    if (this.pending.size) this.flush()
+  }
+
   release() {
     this.released = true
+    this.pending.clear()
+    this.slots.length = 0
     if (this.msgPort) {
       this.msgPort.postMessage({ type: "release" })
       this.msgPort.onmessage = null
@@ -84,6 +495,51 @@ class GltfWorkerHostTop {
     }
     this.instances.clear()
   }
+}
+
+/**
+ * Pose buffer layout for a model graph: which nodes carry a plain node matrix
+ * and which skinned nodes share one set of bone matrices. KEEP IN SYNC with
+ * buildPoseLayout in files/gltfWorker.js - both sides walk the same graph and
+ * must agree on every offset.
+ */
+function buildPoseLayout(g) {
+  const nodes = g.nodes || []
+  const idxOf = new Map()
+  for (let i = 0; i < nodes.length; i++) idxOf.set(nodes[i], i)
+  const parent = new Map()
+  const walk = (list, from) => {
+    for (const n of list) {
+      if (from && !parent.has(n)) parent.set(n, from)
+      if (n.children) walk(n.children, n)
+    }
+  }
+  walk((g.scene && g.scene.nodes) || [], null)
+  const unskinned = []
+  for (let i = 0; i < nodes.length; i++) if (nodes[i].mesh && !nodes[i].skin) unskinned.push(i)
+  const groups = []
+  const byKey = new Map()
+  for (const sn of g.skinnedNodes || []) {
+    const p = parent.get(sn)
+    const key =
+      (p ? idxOf.get(p) : -1) +
+      "|" + (sn.translation || [0, 0, 0]).join(",") +
+      "|" + (sn.scale || [1, 1, 1]).join(",") +
+      "|" + sn.skin.joints.map((j) => idxOf.get(j)).join(",")
+    let grp = byKey.get(key)
+    if (!grp) {
+      grp = { nodes: [], joints: sn.skin.joints.length }
+      byKey.set(key, grp)
+      groups.push(grp)
+    }
+    grp.nodes.push(idxOf.get(sn))
+  }
+  let floats = unskinned.length * 16
+  for (const grp of groups) floats += (grp.joints + 1) * 16
+  // Posed local bounds (min xyz, max xyz, 2 pad), see the worker's computePosedBounds.
+  const boundsOffset = floats
+  floats += 8
+  return { unskinned, groups, floats, boundsOffset }
 }
 
 class GltfModelWTop {
@@ -126,7 +582,22 @@ class GltfModelWTop {
     this.useSharedWorker = false
     this._workerHost = null
     this._iid = undefined
+    // Batched worker protocol state
+    this._poseLayout = null
+    this._groupBuffers = null
+    this._prepDirty = true
+    // Main-thread keyframe state, sampled lazily for node/bone world queries
+    this._mainSampler = null
+    this._nodeIndexOf = null
+    this._trs = null
+    this._poseDirty = false
+    this._poseIndex = 0
+    this._poseTime = 0
+    this._poseDelta = 0
+    // Latest posed local bounds from the worker, or null before the first pose
+    this._posedBounds = null
   }
+
 
   release() {
     this.released = true
@@ -241,35 +712,10 @@ class GltfModelWTop {
     this.locUNormalMatrix = null
   }
 
-  createBoneBufferViews() {
-    // Iterate through all nodes
-    const MATRIX_SIZE = 16
-    const boneBufferViews = this.boneBufferViews
-    let bufferIndex = 0
-    // Unskinned nodes with mesh
-    for (let node of this.gltfData.nodes) {
-      // Check if the node has a mesh and is not a skinned mesh
-      if (node.mesh && !node.skin) {
-        // Set the bufferView start to the current bufferCounter index
-        boneBufferViews.push({ start: bufferIndex, length: MATRIX_SIZE })
-        bufferIndex += MATRIX_SIZE
-      }
-    }
-    // Iterate through all skinned nodes
-    for (let skinnedNode of this.gltfData.skinnedNodes) {
-      // Create a bufferView for each skinned node
-      // Add additional matrix for rootNodeXform matrix
-      boneBufferViews.push({ start: bufferIndex, length: (skinnedNode.skin.joints.length + 1) * MATRIX_SIZE })
-      bufferIndex += (skinnedNode.skin.joints.length + 1) * MATRIX_SIZE
-    }
-  }
-
   copyGltfData(sourceGltf) {
-    // Per-instance view: mutable scene-graph state cloned, heavy immutable data shared
-    if (globalThis.GltfData && typeof globalThis.GltfData.cloneInstanceView === "function") {
-      return globalThis.GltfData.cloneInstanceView(sourceGltf)
-    }
-    return structuredClone(sourceGltf)
+    // Light per-instance view: node objects cloned, everything else shared.
+    // See GltfData.cloneInstanceViewLight.
+    return globalThis.GltfData.cloneInstanceViewLight(sourceGltf)
   }
 
   async init() {
@@ -289,7 +735,23 @@ class GltfModelWTop {
     }
     // Create dedicdated web worker for skinned mesh animation
     this.initDrawMeshes()
-    this.createBoneBufferViews()
+    // Layout and node indices come from the MASTER graph (the worker builds its
+    // graph from the same one); indices apply to the clone by position.
+    const master = this._sdkType.gltfData.gltf
+    this._poseLayout = buildPoseLayout(master)
+    this._nodeIndexOf = new Map()
+    for (let i = 0; i < master.nodes.length; i++) this._nodeIndexOf.set(master.nodes[i], i)
+    // Main-thread transforms live in one flat array; the clone nodes' TRS
+    // properties become views into it so node/bone world queries keep working.
+    this._trs = AnimSampler.initTRS(new Float32Array(master.nodes.length * AnimSampler.TRS_STRIDE), master.nodes)
+    for (let i = 0; i < this.gltfData.nodes.length; i++) {
+      const node = this.gltfData.nodes[i]
+      const o = i * AnimSampler.TRS_STRIDE
+      node.translation = this._trs.subarray(o, o + 3)
+      node.rotation = this._trs.subarray(o + 3, o + 7)
+      node.scale = this._trs.subarray(o + 7, o + 10)
+    }
+    this._mainSampler = AnimSampler.createSamplerState(master.animations)
     await this.createWorker(this._runtime)
     if (this.released) return
     this.workerReady = true
@@ -315,6 +777,7 @@ class GltfModelWTop {
       }
     }
     this.inst.allNodesDisabled = true
+    this._prepDirty = true
   }
 
   initDrawMeshes() {
@@ -410,59 +873,13 @@ class GltfModelWTop {
     }
   }
 
+  /** Non-batch replies (legacy status messages); poses arrive via the host. */
   onWorkerMessage(e) {
-    if (!e.data.type) {
-      this.activeNodes = e.data.activeNodes
-      const gpuSkinning = this.inst.gpuSkinning
-      if (!gpuSkinning) {
-        this.buff = e.data.buff
-        this.verts = new Float32Array(this.buff)
-        this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
-        this.inst.updateBbox = true
-        this.updateDrawVerts = true
-        this.typedVertsToDrawVerts(this.inst.staticGeometry)
-      } else {
-        this.buff = e.data.buff
-        this.buffBones = e.data.buffBones
-        this.bones = new Float32Array(this.buffBones)
-        // this.setBBFromVerts(this.verts, this.inst.minBB, this.inst.maxBB)
-        const x = this.inst.isEditor ? this.inst._inst.GetX() : this.inst.GetWorldInfo().GetX()
-        const y = this.inst.isEditor ? this.inst._inst.GetY() : this.inst.GetWorldInfo().GetY()
-        const z = this.inst.isEditor ? this.inst._inst.GetZElevation() : this.inst.GetWorldInfo().GetZElevation()
-        this.inst.minBB = [-10000 + x, -10000 + y, -10000 + z]
-        this.inst.maxBB = [10000 + x, 10000 + y, 10000 + z]
-        this.inst.updateBbox = true
-        this.updateDrawVerts = true
-        this.typedBonesToDrawBones()
-      }
-      this.workerReady = true
-      if (!this.boundingBoxInit) {
-        this.inst.initBoundingBox()
-        this.boundingBoxInit = true
-      }
-    } else if (e.data.type === "status") {
-      this.buff = e.data.buff
-      if (e.data?.status?.workerReady) {
-        this.workerReady = true
-      }
-    } else if (e.data.type === "needAttributes") {
-      // Worker was created without vertex data (GPU skinning) but a CPU-skinning
-      // request arrived; send the attribute data once and retry next tick
-      this.buff = e.data.buff
-      this.workerReady = true
-      this.sendAttributesToWorker()
-    } else {
-      if (this.inst.debug) console.debug("onMsg t:", this._runtime.GetTickCount(), e.data.type)
+    if (e.data && e.data.type === "status") {
+      if (e.data.status && e.data.status.workerReady) this.workerReady = true
+    } else if (this.inst && this.inst.debug) {
+      console.debug("onMsg t:", this._runtime.GetTickCount(), e.data && e.data.type)
     }
-  }
-
-  _computeBuffLengths() {
-    const bufferViews = this.drawMeshes[this.drawMeshes.length - 1].bufferViews
-    const buffLength = bufferViews[bufferViews.length - 1].start + bufferViews[bufferViews.length - 1].length
-    const buffBonesLength =
-      this.boneBufferViews[this.boneBufferViews.length - 1].start +
-      this.boneBufferViews[this.boneBufferViews.length - 1].length
-    return { buffLength, buffBonesLength }
   }
 
   // The worker only reads bufferViews, drawIndices and (rebuilt per tick) drawVerts
@@ -475,82 +892,68 @@ class GltfModelWTop {
   }
 
   async createWorker(runtime) {
-    // With GPU skinning known at creation time the worker only computes bone
-    // matrices, so all instances of the type share one worker (and one copy of the
-    // model data). Otherwise each instance gets a dedicated worker so CPU vertex
-    // skinning still runs in parallel across instances (original behavior).
-    this.useSharedWorker = !!this.inst.gpuSkinning
-    if (this.useSharedWorker) {
-      const sdkType = this._sdkType
-      // One worker per object type. A pool of them was tried and made no
-      // difference, so the worker's own CPU time is not what limits animation
-      // updates at high instance counts - and extra hosts each cost another
-      // full copy of the model data.
-      if (!sdkType.animWorkerHost) sdkType.animWorkerHost = new GltfWorkerHostTop()
-      const host = sdkType.animWorkerHost
-      const port = await host.getPort(runtime)
-      if (this.released || !port) return null
-      this._workerHost = host
-      this._iid = this.inst.uid
-      this.msgPort = port // shared port: release() must not close it
-      host.add(this._iid, this)
-      const { buffLength, buffBonesLength } = this._computeBuffLengths()
-      this.buff = new ArrayBuffer((buffLength + 7) * 4)
-      if (!host.gltfSent) {
-        host.gltfSent = true
-        host.attributesSent = false // GPU skinning: length stubs only
-        port.postMessage({
-          type: "gltf",
-          shared: true,
-          gltf: this.buildWorkerPayload(false),
-          buffLength: buffLength,
-          drawMeshes: this._slimDrawMeshes(),
-          buffBonesLength,
-        })
-      }
-      port.postMessage({ type: "addInstance", iid: this._iid })
-      return { msgPort: port }
+    // All instances of the type share one worker and one copy of the model
+    // data; the worker only ever computes bone and node matrices (GPU skinning
+    // is the only runtime path), so it needs no vertex data at all.
+    this.useSharedWorker = true
+    const sdkType = this._sdkType
+    if (!sdkType.animWorkerHost) sdkType.animWorkerHost = new GltfWorkerHostTop()
+    const host = sdkType.animWorkerHost
+    const port = await host.getPort(runtime)
+    if (this.released || !port) return null
+    this._workerHost = host
+    this._iid = this.inst.uid
+    this.msgPort = port // shared port: release() must not close it
+    host.poseFloats = this._poseLayout.floats
+    host.add(this._iid, this)
+    if (!host.gltfSent) {
+      host.gltfSent = true
+      host.attributesSent = false // length stubs only
+      port.postMessage({
+        type: "gltf",
+        shared: true,
+        gltf: this.buildWorkerPayload(false),
+        buffLength: 0,
+        drawMeshes: this._slimDrawMeshes(),
+        buffBonesLength: this._poseLayout.floats,
+        groupRadii: this._groupRadiiPayload(),
+      })
     }
+    port.postMessage({ type: "addInstance", iid: this._iid })
+    return { msgPort: port }
+  }
 
-    // Dedicated worker per instance.
-    // Create the worker with the runtime.createWorker() method.
-    // This must be awaited and resolves with a messagePort.
-    let path = await runtime.GetAssetManager().GetProjectFileUrl("gltfWorker.js")
-    if (this.released) return null
-    this.msgPort = await runtime._iRuntime.createWorker(path)
-    if (this.released) {
-      // Instance was destroyed while the worker was being created; tell it to close
-      this.msgPort.postMessage({ type: "release" })
-      this.msgPort.close()
-      this.msgPort = null
-      return null
-    }
-    this.msgPort.onmessage = (e) => this.onWorkerMessage(e)
-    this.msgPort.onmessageerror = (e) => console.error("[3DObject] worker message error", e)
-    // Send the gltfModel to the worker
-    const { buffLength, buffBonesLength } = this._computeBuffLengths()
-    this.buff = new ArrayBuffer((buffLength + 7) * 4)
-    // With GPU skinning the worker only computes bone matrices, so vertex attribute
-    // data is left out of the payload (stubs carry lengths for its bookkeeping).
-    // If the instance later switches to CPU skinning, the worker requests the
-    // attribute data via a "needAttributes" message.
-    const includeAttributes = !this.inst.gpuSkinning
-    this._attributesSentToWorker = includeAttributes
-    this.msgPort.postMessage({
-      type: "gltf",
-      gltf: this.buildWorkerPayload(includeAttributes),
-      buffLength: buffLength,
-      drawMeshes: this._slimDrawMeshes(),
-      buffBonesLength,
+  /**
+   * Bind-pose joint position and radius per skin group, so the worker can
+   * bound the posed model. Uses the instance's cached _jointRadii (computed
+   * once per model from the vertex weights).
+   */
+  _groupRadiiPayload() {
+    const layout = this._poseLayout
+    const nodes = this.gltfData.nodes
+    const inst = this.inst
+    return layout.groups.map((grp) => {
+      const node = nodes[grp.nodes[0]]
+      const r = typeof inst._jointRadii === "function" ? inst._jointRadii(node.skin) : null
+      return r ? { positions: r.positions, radii: r.radii } : null
     })
-    return { msgPort: this.msgPort }
+  }
+
+  /** Posed local bounds from the last worker reply, or null. */
+  getPosedBounds() {
+    return this._posedBounds
   }
 
   // Builds the minimal object graph the animation worker needs: node/skin/animation
   // state always; vertex attributes (positions, weights, joints, morph targets) only
   // when the worker will do CPU skinning. Keyframe data is always required.
   buildWorkerPayload(includeAttributes) {
-    const src = this.gltfData
+    // From the MASTER graph, not this instance's light clone: the payload is
+    // shared by every instance of the type, and the master is the graph whose
+    // skins and animations reference its own nodes (the light clone shares
+    // those objects, so its skins point at master joints - resolving them
+    // against clone nodes yields nothing and every joint collapses to node 0).
+    const src = this._sdkType.gltfData.gltf
     const nodeMap = new Map()
     const meshMap = new Map()
     const skinMap = new Map()
@@ -665,6 +1068,7 @@ class GltfModelWTop {
   }
 
   enableNode(nodeName, enable) {
+    this._prepDirty = true
     if (!this.msgPort) return // worker still starting up or already released
     this.msgPort.postMessage({ type: "enableNode", nodeName: nodeName, enable: enable, iid: this._iid })
   }
@@ -981,47 +1385,67 @@ class GltfModelWTop {
     }
   }
 
-  typedBonesToDrawBones() {
-    // Iterate through all nodes
-    const MATRIX_SIZE = 16
-    const boneBufferViews = this.boneBufferViews
-    let bufferViewIndex = 0
-    // Unskinned nodes with mesh
-    const bones = this.bones
-    const modelAssetBoneCount = this._sdkType.gltfData ? this._sdkType.gltfData.bonesPerModelAsset : 0
-
-    for (let node of this.gltfData.nodes) {
-      // Check if the node has a mesh and is not a skinned mesh
-      if (node.mesh && !node.skin) {
-        if (!node.hasOwnProperty("boneBuffer")) {
-          const actualBonesForThisNode = 0 // Non-skinned nodes don't use skinning bone arrays
-          const boneBuffer = new BoneBufferW(this.inst.renderer, actualBonesForThisNode, false)
-          node.boneBuffer = boneBuffer
-        }
-        const start = boneBufferViews[bufferViewIndex].start
-        // BoneBuffer setters copy into their own arrays, so views are safe here
-        node.boneBuffer.setNodeXform(bones.subarray(start, start + MATRIX_SIZE))
-        bufferViewIndex += 1
-      }
+  /**
+   * One BoneBufferW per skin group, shared by every node in the group, plus a
+   * node-matrix buffer per unskinned mesh node. Created on the first pose,
+   * when the renderer is available.
+   */
+  _ensurePoseBuffers() {
+    if (this._groupBuffers) return true
+    const renderer = this.inst.renderer
+    if (!renderer) return false
+    const layout = this._poseLayout
+    const nodes = this.gltfData.nodes
+    for (let i = 0; i < layout.unskinned.length; i++) {
+      const node = nodes[layout.unskinned[i]]
+      if (!node.boneBuffer) node.boneBuffer = new BoneBufferW(renderer, 0, false)
     }
+    const bonesPer = this._sdkType.gltfData ? this._sdkType.gltfData.bonesPerModelAsset : 0
+    this._groupBuffers = layout.groups.map((grp) => {
+      const bb = new BoneBufferW(renderer, bonesPer, true)
+      for (let i = 0; i < grp.nodes.length; i++) nodes[grp.nodes[i]].boneBuffer = bb
+      return bb
+    })
+    return true
+  }
 
-    // Iterate through all skinned nodes
-    for (let skinnedNode of this.gltfData.skinnedNodes) {
-      if (!skinnedNode.hasOwnProperty("boneBuffer")) {
-        // For skinned nodes, use the modelAssetBoneCount
-        const boneBuffer = new BoneBufferW(this.inst.renderer, modelAssetBoneCount, true)
-        skinnedNode.boneBuffer = boneBuffer
-      }
-      const length = boneBufferViews[bufferViewIndex].length
-      const start = boneBufferViews[bufferViewIndex].start
-      // The data from worker (this.bones) via buffBones might be structured differently.
-      // It seems to be a flat array of matrices.
-      // bones.slice(start, start + length - MATRIX_SIZE) is for bone matrices
-      // bones.slice(start + length - MATRIX_SIZE, start + length) is for rootNodeXform
-      skinnedNode.boneBuffer.setBones(bones.subarray(start, start + length - MATRIX_SIZE))
-      skinnedNode.boneBuffer.setRootNodeXform(bones.subarray(start + length - MATRIX_SIZE, start + length))
-      bufferViewIndex += 1
+  /** Consume one pose from a batch reply (layout: see buildPoseLayout). */
+  applyPose(out, base) {
+    if (!this._ensurePoseBuffers()) return
+    const layout = this._poseLayout
+    const nodes = this.gltfData.nodes
+    let k = base
+    for (let i = 0; i < layout.unskinned.length; i++) {
+      nodes[layout.unskinned[i]].boneBuffer.setNodeXformFrom(out, k)
+      k += 16
     }
+    const groups = layout.groups
+    for (let gi = 0; gi < groups.length; gi++) {
+      const floats = groups[gi].joints * 16
+      const bb = this._groupBuffers[gi]
+      bb.setBonesFrom(out, k, floats)
+      k += floats
+      bb.setRootNodeXformFrom(out, k)
+      k += 16
+    }
+    const b = base + layout.boundsOffset
+    if (out[b] === out[b]) {
+      // NaN marks "no skinned bounds" (all groups hidden or no radii)
+      let pb = this._posedBounds
+      if (!pb) pb = this._posedBounds = { min: [0, 0, 0], max: [0, 0, 0] }
+      pb.min[0] = out[b]; pb.min[1] = out[b + 1]; pb.min[2] = out[b + 2]
+      pb.max[0] = out[b + 3]; pb.max[1] = out[b + 4]; pb.max[2] = out[b + 5]
+    } else {
+      this._posedBounds = null
+    }
+    this.inst.updateBbox = true
+    this.updateDrawVerts = true
+    this.workerReady = true
+    if (!this.boundingBoxInit) {
+      this.inst.initBoundingBox()
+      this.boundingBoxInit = true
+    }
+    this.inst.runtime.UpdateRender()
   }
 
   typedVertsToDrawVerts(staticGeometry) {
@@ -1126,26 +1550,11 @@ class GltfModelWTop {
     )
   }
 
+  /** Request a pose without advancing the animation (init, node enable/disable). */
   getPolygons(staticGeometry) {
-    if (this.inst.isEditor) {
-      const sig = this._editorPolygonSignature()
-      if (sig === this._editorPolySig) return
-      this._editorPolySig = sig
-    }
-    if (!this.workerReady) return
-    const editorData = this.getPolygonsPrep(staticGeometry, this.inst.gpuSkinning)
-    const data = { editorData }
-    this.workerReady = false
-    // Return the bones buffer to the worker so it can be reused (ping-pong like buff)
-    const buffBones = this.buffBones && this.buffBones.byteLength > 0 ? this.buffBones : null
-    if (buffBones) {
-      this.buffBones = null
-      this.bones = null
-    }
-    this.msgPort.postMessage(
-      { type: "getPolygons", data: data, buff: this.buff, buffBones, iid: this._iid },
-      buffBones ? [this.buff, buffBones] : [this.buff]
-    )
+    if (!this.workerReady || !this._workerHost) return
+    this.getPolygonsPrep(staticGeometry, this.inst.gpuSkinning)
+    this._workerHost.queue(this, -1, 0, 0, 0, 1)
   }
 
   getEditorData(isEditor, gpuSkinning) {
@@ -1195,6 +1604,7 @@ class GltfModelWTop {
     this.drawMeshesIndex = -1
 
     const editorData = this.getEditorData(this.inst.isEditor, gpuSkinning)
+    this._prepDirty = false
 
     // update all scene matrixes.
     // only update drawMesh meta data, vertex data will be updated in the worker
@@ -1291,31 +1701,68 @@ class GltfModelWTop {
    * the time, so most updates were being lost for an interval each.
    */
   updateAnimationPolygons(index, time, onScreen, deltaTime, staticGeometry, gpuSkinning = false) {
-    if (!this.workerReady) return false
-    this.workerReady = false
-    this.updateAnimation(index, time, onScreen, deltaTime)
+    if (!this.workerReady || !this._workerHost) return false
+    this._advanceTime(index, time, deltaTime)
     this.inst.updateBbox = true
-
-    const animationBlend = this.inst.animationBlend
-    const animationLoop = this.inst.animationLoop
-    let animationData = { index, time, onScreen, deltaTime, animationBlend, animationLoop }
-    let editorData = {}
-    if (onScreen) {
-      editorData = this.getPolygonsPrep(staticGeometry, gpuSkinning)
-      this.inst.runtime.UpdateRender()
-    }
-    const data = { animationData, editorData }
-    // Return the bones buffer to the worker so it can be reused (ping-pong like buff)
-    const buffBones = this.buffBones && this.buffBones.byteLength > 0 ? this.buffBones : null
-    if (buffBones) {
-      this.buffBones = null
-      this.bones = null
-    }
-    this.msgPort.postMessage(
-      { type: "updateAnimationPolygons", data: data, buff: this.buff, buffBones, iid: this._iid },
-      buffBones ? [this.buff, buffBones] : [this.buff]
-    )
+    // Off screen: nothing to pose. Time keeps advancing on the main thread, so
+    // the model resumes at the right frame when it comes back into view.
+    if (!onScreen) return true
+    if (this._prepDirty) this.getPolygonsPrep(staticGeometry, gpuSkinning)
+    this._workerHost.queue(this, index, time, deltaTime, this.inst.animationBlend, this.inst.animationLoop ? 1 : 0)
     return true
+  }
+
+  /**
+   * Main-thread bookkeeping that used to ride on a full keyframe pass: the
+   * wrapped time, and the finished triggers for non-looping animations.
+   */
+  _advanceTime(index, time, deltaTime) {
+    const anim = this.gltfData.animations[index]
+    if (!anim) return
+    const range = AnimSampler.animationTimeRange(anim)
+    const tMin = range[0]
+    const tMax = range[1]
+    let t = time
+    if (tMax > tMin) {
+      if (this.inst.animationLoop) {
+        t = ((time - tMin) % (tMax - tMin)) + tMin
+      } else if (time > tMax) {
+        t = tMax - 0.01
+        if (!this.inst.animationFinished) {
+          this.inst.animationFinished = true
+          this.inst.animationNameFinished = this.inst.animationName
+          this.inst.Trigger(self.C3.Plugins.Mikal_3DObject.Cnds.OnAnimationFinished)
+          this.inst.Trigger(self.C3.Plugins.Mikal_3DObject.Cnds.OnAnimationNameFinished)
+        }
+      }
+    }
+    this.inst.currentAnimationTime = t
+    this._poseIndex = index
+    this._poseTime = time
+    this._poseDelta = deltaTime
+    this._poseDirty = true
+    // Blending is stateful (it snapshots the previous pose every frame), so a
+    // blending model has to be sampled every frame to stay correct. Without
+    // blending the pose is only needed when something asks for a node.
+    if (this.inst.animationBlend != 0) this.ensureMainThreadPose()
+  }
+
+  /** Bring the main-thread node transforms up to date with the current time. */
+  ensureMainThreadPose() {
+    if (!this._poseDirty || !this._mainSampler) return
+    this._poseDirty = false
+    const anim = this.gltfData.animations[this._poseIndex]
+    if (!anim) return
+    AnimSampler.sampleAnimation(
+      this._mainSampler,
+      AnimSampler.prepareAnimation(anim, this._nodeIndexOf),
+      this._poseIndex,
+      this._poseTime,
+      this._poseDelta,
+      this.inst.animationBlend,
+      this.inst.animationLoop,
+      this._trs
+    )
   }
 
   updateModelRotate(x, y, z) {
@@ -1337,176 +1784,6 @@ class GltfModelWTop {
     mat4.fromRotationTranslationScale(this.modelRotate, rotate, [x, y, z], [xScale, -yScale, zScale])
   }
 
-  lerp(a, b, alpha) {
-    return a + alpha * (b - a)
-  }
-
-  // Updates animation at index to be at time.  Is used to play animation.
-  // Also updates node transforms so getBoneWorldPosition works correctly.
-  updateAnimation(index, time, onScreen, deltaTime) {
-    const vec3 = globalThis.glMatrix3D.vec3
-    const quat = globalThis.glMatrix3D.quat
-    const gltf = this.gltfData
-    const animationBlend = this.inst.animationBlend
-    let anim = gltf.animations[index]
-
-    // Blend state machine
-    switch (this._blendState) {
-      case "init":
-        if (animationBlend != 0 && this._lastIndex != index) {
-          this._blendState = "blend"
-          this._blendTime = 0
-          this._blendTarget = this._lastTarget[this._lastTargetIndex]
-          if (this._lastTargetIndex == 0) {
-            this._lastTargetIndex = 1
-          } else {
-            this._lastTargetIndex = 0
-          }
-          this._lastIndex = index
-        }
-        break
-      case "blend":
-        if (this._lastIndex != index) {
-          this._blendState = "blend"
-          this._blendTime = 0
-          this._blendTarget = this._lastTarget[this._lastTargetIndex]
-          if (this._lastTargetIndex == 0) {
-            this._lastTargetIndex = 1
-          } else {
-            this._lastTargetIndex = 0
-          }
-          this._lastIndex = index
-          break
-        }
-        if (this._blendTime > animationBlend) {
-          this._blendState = "idle"
-          break
-        }
-        this._blendTime += deltaTime
-        break
-      case "idle":
-        if (this._lastIndex != index) {
-          this._blendState = "blend"
-          this._blendTime = 0
-          this._blendTarget = this._lastTarget[this._lastTargetIndex]
-          if (this._lastTargetIndex == 0) {
-            this._lastTargetIndex = 1
-          } else {
-            this._lastTargetIndex = 0
-          }
-          this._lastIndex = index
-        }
-        break
-      default:
-        console.warn("[3DObject] bad blend state:", this._blendState)
-    }
-
-    this._lastTarget[this._lastTargetIndex] = []
-
-    for (let i = 0; i < anim.channels.length; i++) {
-      let c = anim.channels[i]
-      let timeValues = c.sampler.input
-      let otherValues = c.sampler.output.data
-      let target = c.target
-
-      if (timeValues.max[0] == timeValues.min[0]) {
-        continue
-      }
-
-      if (this.inst.animationLoop) {
-        time = ((time - timeValues.min[0]) % (timeValues.max[0] - timeValues.min[0])) + timeValues.min[0] // loop
-      } else {
-        if (time > timeValues.max[0]) {
-          time = timeValues.max[0] - 0.01 // Stop on max time
-          if (!this.inst.animationFinished) {
-            this.inst.animationFinished = true
-            this.inst.animationNameFinished = this.inst.animationName
-            // @ts-ignore
-            this.inst.Trigger(self.C3.Plugins.Mikal_3DObject.Cnds.OnAnimationFinished)
-            // @ts-ignore
-            this.inst.Trigger(self.C3.Plugins.Mikal_3DObject.Cnds.OnAnimationNameFinished)
-          }
-        }
-      }
-      this.inst.currentAnimationTime = time
-
-      // Update node transforms for getBoneWorldPosition
-      timeValues = timeValues.data
-
-      // Find index in timeline
-      let t0, t1
-      for (t0 = 0, t1 = 1; t0 < timeValues.length - 1; t0++, t1++)
-        if (time >= timeValues[t0] && time <= timeValues[t1]) break
-
-      if (timeValues[t1] == null) continue
-
-      let t = (time - timeValues[t0]) / (timeValues[t1] - timeValues[t0])
-
-      if (target.path == "translation")
-        vec3.lerp(
-          target.node.translation,
-          otherValues.subarray(t0 * 3, t0 * 3 + 3),
-          otherValues.subarray(t1 * 3, t1 * 3 + 3),
-          t
-        )
-      else if (target.path == "rotation")
-        quat.slerp(
-          target.node.rotation,
-          otherValues.subarray(t0 * 4, t0 * 4 + 4),
-          otherValues.subarray(t1 * 4, t1 * 4 + 4),
-          t
-        )
-      else if (target.path == "scale")
-        vec3.lerp(
-          target.node.scale,
-          otherValues.subarray(t0 * 3, t0 * 3 + 3),
-          otherValues.subarray(t1 * 3, t1 * 3 + 3),
-          t
-        )
-      else if (target.path == "weights") {
-        const node = target.node
-        if (node.mesh && node.mesh.primitives && node.mesh.primitives[0] && node.mesh.primitives[0].targets) {
-          node.weights = new Float32Array(node.mesh.primitives[0].targets.length)
-          const weights = node.weights
-          const stride = weights.length
-          for (let j = 0; j < stride; j++) {
-            weights[j] = this.lerp(otherValues[t0 * stride + j], otherValues[t1 * stride + j], t)
-          }
-        }
-      }
-
-      // Blend to last animation if during blend
-      if (this._blendState == "blend") {
-        const blend = this._blendTime == 0 ? 0 : this._blendTime / animationBlend
-        const blendTarget = this._blendTarget[i]
-        if (blendTarget != null) {
-          if (target.path == "translation" && blendTarget.path == "translation")
-            vec3.lerp(target.node.translation, blendTarget.node.translation, target.node.translation, blend)
-          else if (target.path == "rotation" && blendTarget.path == "rotation")
-            quat.slerp(target.node.rotation, blendTarget.node.rotation, target.node.rotation, blend)
-          else if (target.path == "scale" && blendTarget.path == "scale")
-            vec3.lerp(target.node.scale, blendTarget.node.scale, target.node.scale, blend)
-        }
-      }
-
-      // Store for next blend
-      if (animationBlend != 0) {
-        const lastTarget = {}
-        lastTarget.node = {}
-        if (target.path == "translation") {
-          lastTarget.path = target.path
-          lastTarget.node.translation = vec3.clone(target.node.translation)
-        } else if (target.path == "rotation") {
-          lastTarget.path = target.path
-          lastTarget.node.rotation = quat.clone(target.node.rotation)
-        } else if (target.path == "scale") {
-          lastTarget.path = target.path
-          lastTarget.node.scale = vec3.clone(target.node.scale)
-        }
-        this._lastTarget[this._lastTargetIndex].push(lastTarget)
-      }
-    }
-  }
 }
 
 // @ts-ignore

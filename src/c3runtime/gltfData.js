@@ -1216,6 +1216,41 @@ class GltfData {
     gltf, which duplicated the entire decoded model (and its underlying binary buffer) per
     instance.
   */
+  /*
+    Lighter per-instance view for the worker-animation path. Only what that path
+    mutates per instance is cloned: the node objects (for `disabled`, `boneBuffer`
+    and the transform views the model installs) and the graph references between
+    them. Meshes, materials, skins, matrices and - above all - the animation list
+    are shared. Cloning the animations was ~2,900 objects per character instance
+    (23 animations x 126 channels), which is what ran a 6,000-instance test out of
+    memory on both threads.
+  */
+  static cloneInstanceViewLight(sourceGltf) {
+    const nodeMap = new Map()
+    const sourceNodes = sourceGltf.nodes || []
+    for (const node of sourceNodes) {
+      const copy = { ...node }
+      delete copy.boneBuffer
+      delete copy.morphWeights
+      nodeMap.set(node, copy)
+    }
+    for (const node of sourceNodes) {
+      if (node.children) nodeMap.get(node).children = node.children.map((c) => nodeMap.get(c) || c)
+    }
+    const target = { ...sourceGltf }
+    target.buffers = null
+    target.imageBitmap = null
+    target.nodes = sourceNodes.map((n) => nodeMap.get(n))
+    target.skinnedNodes = (sourceGltf.skinnedNodes || []).map((n) => nodeMap.get(n) || n)
+    if (sourceGltf.scene) {
+      target.scene = { ...sourceGltf.scene, nodes: sourceGltf.scene.nodes.map((n) => nodeMap.get(n) || n) }
+    }
+    if (sourceGltf.scenes) {
+      target.scenes = sourceGltf.scenes.map((sc) => ({ ...sc, nodes: sc.nodes.map((n) => nodeMap.get(n) || n) }))
+    }
+    return target
+  }
+
   static cloneInstanceView(sourceGltf) {
     const nodeMap = new Map()
     const meshMap = new Map()

@@ -695,6 +695,8 @@
     // stale on the main thread in worker mode), premultiplied by a fresh modelRotate
     _getNodeWorldTransform(nodeName) {
       if (!this._refreshModelRotate() || !this._ensureNodeMaps()) return null
+      // Worker mode samples the main-thread pose lazily; bring it up to date.
+      if (this.gltf && typeof this.gltf.ensureMainThreadPose === "function") this.gltf.ensureMainThreadPose()
       const node = this._nodeByName.get(nodeName)
       if (!node) return null
       const mat4 = globalThis.glMatrix3D.mat4
@@ -879,6 +881,8 @@
     _poseLocalBounds() {
       const gltf = this.gltf?.gltfData
       if (!gltf || !gltf.skinnedNodes || gltf.skinnedNodes.length === 0) return null
+      // Worker mode: the worker bounds the real pose and sends it with the bones.
+      if (this.gltf && typeof this.gltf.getPosedBounds === "function") return this.gltf.getPosedBounds()
       const vec3 = globalThis.glMatrix3D.vec3
       const min = [Infinity, Infinity, Infinity]
       const max = [-Infinity, -Infinity, -Infinity]
