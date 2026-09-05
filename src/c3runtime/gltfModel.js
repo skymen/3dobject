@@ -986,6 +986,9 @@ class GltfModelTop {
       mat4.fromRotationTranslationScale(parentMatrix, rootNode.rotation, rootNode.translation, rootNode.scale)
       rootNodeXform = true
     }
+    // The transform the skinning shader applies after the bone matrices; the
+    // instance bounds the posed skeleton in the same space (_poseLocalBounds).
+    this.rootNodeXform = rootNodeXform ? parentMatrix : null
 
     for (let ii = 0; ii < gltf.skinnedNodes.length; ii++) {
       let node = gltf.skinnedNodes[ii]

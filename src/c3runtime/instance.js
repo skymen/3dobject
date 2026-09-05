@@ -52,7 +52,6 @@
       this.updateBbox = true
       this.xMinBB = [0, 0, 0]
       this.xMaxBB = [0, 0, 0]
-      this.bboxScale = 1
       this.animationNameFinished = ""
       this.totalTriangles = 0
       // The only runtime path. See the constructor note on the deprecated
@@ -164,7 +163,7 @@
         this.animationName = this.gltf.getAnimationNames()[0]
       }
       this.gltf.updateModelRotate(wi.GetX(), wi.GetY(), wi.GetTotalZElevation())
-      this._updateBoundingBox(wi.GetX(), wi.GetY(), 0, this.gpuSkinning)
+      this._updateBoundingBox(wi.GetX(), wi.GetY(), wi.GetTotalZElevation(), this.gpuSkinning)
 
       // Initialize position tracking
       this._lastX = wi.GetX()
@@ -324,18 +323,7 @@
       // Update transformed bounding box (xMinBB/xMaxBB) even when offscreen
       // This ensures bbox values are always up-to-date for visibility testing
       // and for external queries (e.g., getObjectBounds)
-      if (this.updateBbox && this.loaded && this.gltf?.modelRotate) {
-        const wi = this.GetWorldInfo()
-        const x = wi.GetX()
-        const y = wi.GetY()
-        const z = wi.GetTotalZElevation()
-
-        // Update modelRotate matrix first
-        this.gltf.updateModelRotate(x, y, z)
-        this._updateBoundingBox(x, y, z, this.gpuSkinning)
-        wi.SetBboxChanged()
-        this.updateBbox = false
-      }
+      if (this.updateBbox) this.refreshBoundingBox()
 
       // Restore the element array buffer, but only when we actually drew (our
       // static-geometry path rebinds it) and only on WebGL (no _gl on WebGPU)
@@ -435,6 +423,27 @@
       }
     }
 
+    /**
+     * Recompute the Construct box (size, origin, depth) from the current pose
+     * and transform. Called from the tick, and directly when a pose lands from
+     * the worker: Construct sizes an effect surface from this box BEFORE it
+     * calls Draw, so a box refreshed after drawing is a frame late and clips
+     * fast animations at the edges.
+     */
+    refreshBoundingBox() {
+      if (!this.loaded || !this.gltf?.modelRotate) return
+      const wi = this.GetWorldInfo()
+      const x = wi.GetX()
+      const y = wi.GetY()
+      const z = wi.GetTotalZElevation()
+
+      // Update modelRotate matrix first
+      this.gltf.updateModelRotate(x, y, z)
+      this._updateBoundingBox(x, y, z, this.gpuSkinning)
+      wi.SetBboxChanged()
+      this.updateBbox = false
+    }
+
     initBoundingBox() {
       const wi = this.GetWorldInfo()
       const x = wi.GetX()
@@ -525,16 +534,22 @@
         let height = xMaxBB[1] - xMinBB[1]
         height = height == 0 ? 1 : height
         width = width == 0 ? 1 : width
-        wi.SetSize(width * this.bboxScale, height * this.bboxScale)
+        wi.SetSize(width, height)
         wi.SetOriginX(-(xMinBB[0] - x) / width)
         wi.SetOriginY(-(xMinBB[1] - y) / height)
-        this._setZHeight((xMaxBB[2] - xMinBB[2]) * this.bboxScale)
+        // Construct spans the 3D box from the instance's Z elevation to
+        // Z + depth (that is what sizes the effect surface and culls), so the
+        // depth has to reach the model's top from the INSTANCE z, not from the
+        // model's own lowest point - a pose with both feet off the ground would
+        // otherwise lose that much off the top. Anything below the instance z
+        // cannot be represented; keep the origin at the model's base.
+        this._setZHeight(Math.max(xMaxBB[2] - z, 1))
       } else {
         const wi = this.GetWorldInfo()
-        wi.SetSize(100 * this.bboxScale, 100 * this.bboxScale)
+        wi.SetSize(100, 100)
         wi.SetOriginX(0.5)
         wi.SetOriginY(0.5)
-        this._setZHeight(100 * this.bboxScale)
+        this._setZHeight(100)
         if (this.debug && !this.allNodesDisabled)
           console.warn("No min/max found in GLTF accessors. Bounding box dimensions set to default 100,100,100 values.")
       }
@@ -888,6 +903,11 @@
       const max = [-Infinity, -Infinity, -Infinity]
       const centre = vec3.create()
       let any = false
+      // boneMatrix is relative to the skinned node (inv(node) * joint * invBind)
+      // and the shader applies the scene root TRS (uRootNodeXform) on top; bound
+      // in that same space or a rotated/scaled root puts the box elsewhere.
+      const root = this.gltf.rootNodeXform
+      const rootScale = root ? Math.max(Math.hypot(root[0], root[1], root[2]), Math.hypot(root[4], root[5], root[6]), Math.hypot(root[8], root[9], root[10])) : 1
 
       for (const node of gltf.skinnedNodes) {
         if (node.disabled) continue
@@ -901,10 +921,11 @@
           centre[1] = radii.positions[j * 3 + 1]
           centre[2] = radii.positions[j * 3 + 2]
           vec3.transformMat4(centre, centre, m)
+          if (root) vec3.transformMat4(centre, centre, root)
           const sx = Math.hypot(m[0], m[1], m[2])
           const sy = Math.hypot(m[4], m[5], m[6])
           const sz = Math.hypot(m[8], m[9], m[10])
-          const r = radii.radii[j] * Math.max(sx, sy, sz)
+          const r = radii.radii[j] * Math.max(sx, sy, sz) * rootScale
           any = true
           for (let a = 0; a < 3; a++) {
             if (centre[a] - r < min[a]) min[a] = centre[a] - r
@@ -1047,7 +1068,6 @@
       this.minBB = null
       this.maxBB = null
       this.updateBbox = null
-      this.bboxScale = null
       this.workerAnimation = null
       this.gltf = null
       this.animationOffset = null

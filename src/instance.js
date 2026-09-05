@@ -166,6 +166,12 @@
       )
         return
 
+      // These values are written into the layout file. The bounds come from
+      // float32 vertex data pushed through the node and skinning maths, so
+      // their last digits move between runs and addon versions; written raw
+      // they rewrote width/height/origin with noise on every layout open and
+      // left projects dirty. Quantise (1e-4 px, 1e-6 origin) and only write a
+      // change the editor could actually show.
       const wi = this._inst
       const x = wi.GetX()
       const y = wi.GetY()
@@ -173,12 +179,17 @@
       let height = this.maxBB[1] - this.minBB[1]
       width = width == 0 ? 1 : width
       height = height == 0 ? 1 : height
-      const originX = -(this.minBB[0] - x) / width
-      const originY = -(this.minBB[1] - y) / height
+      width = Math.round(width * 1e4) / 1e4
+      height = Math.round(height * 1e4) / 1e4
+      const originX = Math.round((-(this.minBB[0] - x) / width) * 1e6) / 1e6
+      const originY = Math.round((-(this.minBB[1] - y) / height) * 1e6) / 1e6
 
-      if (wi.GetWidth() !== width || wi.GetHeight() !== height) wi.SetSize(width, height)
-      if (wi.GetOriginX() !== originX) wi.SetOriginX(originX)
-      if (wi.GetOriginY() !== originY) wi.SetOriginY(originY)
+      const SIZE_EPS = 1e-3
+      const ORIGIN_EPS = 1e-5
+      if (Math.abs(wi.GetWidth() - width) > SIZE_EPS || Math.abs(wi.GetHeight() - height) > SIZE_EPS)
+        wi.SetSize(width, height)
+      if (Math.abs(wi.GetOriginX() - originX) > ORIGIN_EPS) wi.SetOriginX(originX)
+      if (Math.abs(wi.GetOriginY() - originY) > ORIGIN_EPS) wi.SetOriginY(originY)
     }
 
     _drawPlaceholder(iRenderer) {

@@ -730,6 +730,14 @@ function computePose(rec, out, base) {
 // Reads the bone matrices computePose just wrote into `out`, so no matrix maths
 // is repeated: per joint one transform of the bind position and three column
 // lengths for the radius scale.
+//
+// Bone matrices are relative to the group head (inv(head) * world(joint) *
+// invBind) and the shader multiplies the skinned vertex by uRootNodeXform - the
+// scene root TRS computePose left in tmp16 - afterwards. Bound each group in
+// head space, then push that box through the same root transform, otherwise a
+// model whose root is rotated or scaled (a Blender rig exported with a 90 deg X
+// rotation and a unit scale, say) gets a box in the wrong space that never
+// follows the pose, and Construct clips the model at the bind-pose box.
 function computePosedBounds(rec, out, base) {
   const at = base + graph.boundsOffset
   let minX = Infinity, minY = Infinity, minZ = Infinity
@@ -737,6 +745,7 @@ function computePosedBounds(rec, out, base) {
   const groups = graph.groups
   const disabled = rec.disabledNodes
   const nodes = graph.nodes
+  const root = tmp16
   let m = base + graph.unskinned.length * 16
   for (let gi = 0; gi < groups.length; gi++) {
     const grp = groups[gi]
@@ -754,6 +763,8 @@ function computePosedBounds(rec, out, base) {
     }
     const pos = rad.positions
     const radii = rad.radii
+    let gMinX = Infinity, gMinY = Infinity, gMinZ = Infinity
+    let gMaxX = -Infinity, gMaxY = -Infinity, gMaxZ = -Infinity
     for (let j = 0; j < nJoints; j++, m += 16) {
       const px = pos[j * 3], py = pos[j * 3 + 1], pz = pos[j * 3 + 2]
       const cx = out[m] * px + out[m + 4] * py + out[m + 8] * pz + out[m + 12]
@@ -763,14 +774,30 @@ function computePosedBounds(rec, out, base) {
       const sy = Math.hypot(out[m + 4], out[m + 5], out[m + 6])
       const sz = Math.hypot(out[m + 8], out[m + 9], out[m + 10])
       const r = radii[j] * Math.max(sx, sy, sz)
-      if (cx - r < minX) minX = cx - r
-      if (cy - r < minY) minY = cy - r
-      if (cz - r < minZ) minZ = cz - r
-      if (cx + r > maxX) maxX = cx + r
-      if (cy + r > maxY) maxY = cy + r
-      if (cz + r > maxZ) maxZ = cz + r
+      if (cx - r < gMinX) gMinX = cx - r
+      if (cy - r < gMinY) gMinY = cy - r
+      if (cz - r < gMinZ) gMinZ = cz - r
+      if (cx + r > gMaxX) gMaxX = cx + r
+      if (cy + r > gMaxY) gMaxY = cy + r
+      if (cz + r > gMaxZ) gMaxZ = cz + r
     }
     m += 16 // root transform slot
+    if (gMinX === Infinity) continue
+    // Eight corners of the head-space box through the root transform.
+    for (let c = 0; c < 8; c++) {
+      const px = c & 1 ? gMaxX : gMinX
+      const py = c & 2 ? gMaxY : gMinY
+      const pz = c & 4 ? gMaxZ : gMinZ
+      const wx = root[0] * px + root[4] * py + root[8] * pz + root[12]
+      const wy = root[1] * px + root[5] * py + root[9] * pz + root[13]
+      const wz = root[2] * px + root[6] * py + root[10] * pz + root[14]
+      if (wx < minX) minX = wx
+      if (wy < minY) minY = wy
+      if (wz < minZ) minZ = wz
+      if (wx > maxX) maxX = wx
+      if (wy > maxY) maxY = wy
+      if (wz > maxZ) maxZ = wz
+    }
   }
   if (minX === Infinity) {
     out[at] = NaN

@@ -1438,13 +1438,16 @@ class GltfModelWTop {
     } else {
       this._posedBounds = null
     }
-    this.inst.updateBbox = true
     this.updateDrawVerts = true
     this.workerReady = true
     if (!this.boundingBoxInit) {
       this.inst.initBoundingBox()
       this.boundingBoxInit = true
     }
+    // Refresh the Construct box now rather than on the next tick: Construct
+    // sizes an effect surface from the box before Draw, so a stale box clips.
+    this.inst.updateBbox = true
+    if (typeof this.inst.refreshBoundingBox === "function") this.inst.refreshBoundingBox()
     this.inst.runtime.UpdateRender()
   }
 
