@@ -763,62 +763,53 @@ class GltfModelWTop {
   }
 
   /** All post-draw cleanup in a single deferred job. */
+  /**
+   * Everything that has to happen after a model's meshes are drawn, in one
+   * deferred job. Only genuinely shared GL state is put back: the uniforms
+   * live on OUR dedicated program, which nothing else draws with, and the next
+   * draw sets them through the value cache anyway.
+   *
+   * This used to also reset the colour/skin/rotate uniforms with RAW gl calls,
+   * which the cache never saw. The cache then believed uUseUniformColor was
+   * still 1 and uObjectColor still the last tint, skipped the next upload, and
+   * every worker-animated model after the first drew untinted.
+   */
   _afterDrawCleanup(renderer) {
-    this.disableVertexShaderModelRotate(renderer)
-    this._disableGPUSkinning(renderer)
-    this._resetColorUniforms(renderer)
     if (this.inst.staticGeometry) this._restoreC3Attribs(renderer)
+    // @ts-ignore
+    if (globalThis.BoneBuffer && typeof this._bindDummyBonesUbo === "function") this._bindDummyBonesUbo(renderer)
   }
 
+  // All uniform writes below go through the value cache so it never disagrees
+  // with the GL state. See _afterDrawCleanup.
   setVertexShaderModelRotate(renderer, modelRotate) {
     const gl = renderer._gl
-    const batchState = renderer._batchState
-    const shaderProgram = batchState.currentShader._shaderProgram
-
-    this.locUModelRotate = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotate")
-    this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
-    this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-
-    gl.uniformMatrix4fv(this.locUModelRotate, false, modelRotate)
-    gl.uniform1f(this.locUModelRotateEnable, 1)
-    gl.uniform1f(this.locUPhongEnable, 0)
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram
+    globalThis.uniformCache.setMatrix4(gl, shaderProgram, "uModelRotate", modelRotate)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uModelRotateEnable", 1)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uPhongEnable", 0)
   }
 
   disableVertexShaderModelRotate(renderer) {
     const gl = renderer._gl
-    const batchState = renderer._batchState
-    const shaderProgram = batchState.currentShader._shaderProgram
-
-    this.locUModelRotateEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uModelRotateEnable")
-    this.locUPhongEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uPhongEnable")
-
-    gl.uniform1f(this.locUModelRotateEnable, 0)
-    gl.uniform1f(this.locUPhongEnable, 0)
+    const shaderProgram = renderer._batchState.currentShader._shaderProgram
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uModelRotateEnable", 0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uPhongEnable", 0)
   }
 
   _disableGPUSkinning(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
-
-    this.locUSkinEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uSkinEnable")
-    this.locUNodeXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable")
-
-    gl.uniform1f(this.locUSkinEnable, 0.0)
-    gl.uniform1f(this.locUNodeXformEnable, 0.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uSkinEnable", 0.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uNodeXformEnable", 0.0)
   }
 
   _resetColorUniforms(renderer) {
     const gl = renderer._gl
     const shaderProgram = renderer._batchState.currentShader._shaderProgram
-
-    // Reset color uniforms for subsequent non-3D objects
-    const locUseUniformColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uUseUniformColor")
-    const locObjectColor = globalThis.uniformCache.getLocation(gl, shaderProgram, "uObjectColor")
-    const locHasVertexColors = globalThis.uniformCache.getLocation(gl, shaderProgram, "uHasVertexColors")
-
-    if (locUseUniformColor) gl.uniform1f(locUseUniformColor, 0.0)
-    if (locObjectColor) gl.uniform4f(locObjectColor, 1.0, 1.0, 1.0, 1.0)
-    if (locHasVertexColors) gl.uniform1f(locHasVertexColors, 1.0) // Reset to C3 default (use vertex colors)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uUseUniformColor", 0.0)
+    globalThis.uniformCache.setVec4(gl, shaderProgram, "uObjectColor", 1.0, 1.0, 1.0, 1.0)
+    globalThis.uniformCache.setFloat(gl, shaderProgram, "uHasVertexColors", 1.0)
   }
 
   render(renderer, x, y, z, tempQuad, whiteTexture, instanceC3Color, textures, opacity) {

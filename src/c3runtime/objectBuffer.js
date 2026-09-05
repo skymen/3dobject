@@ -46,9 +46,9 @@ class ObjectBufferTop {
     this.morphVertexCount = vertexData ? vertexData.length / 3 : 0
     this.instanceBuffer = null
     this.canInstance = false
-    this._instanceData = null
-    this._instanceCount = 0
-    this._groupQueued = false
+    // Instanced-draw groups. See addInstance().
+    this._openGroup = null
+    this._groupPool = []
     this.isSkinned = !!(weightsData && jointsData)
     this.indexDataLength = indexData.length
     this.vertexData = vertexData
@@ -351,6 +351,9 @@ class ObjectBufferTop {
 
     const locUNodeXformEnable = globalThis.uniformCache.getLocation(gl, shaderProgram, "uNodeXformEnable")
     gl.uniform1f(locUNodeXformEnable, 1.0)
+    // Raw writes: tell the value cache so the next cached set is not skipped.
+    globalThis.uniformCache.invalidate(shaderProgram, "uNodeXform")
+    globalThis.uniformCache.invalidate(shaderProgram, "uNodeXformEnable")
   }
 
   /**
@@ -628,24 +631,52 @@ class ObjectBufferTop {
    * Queue one instance of this mesh for an instanced draw.
    *
    * The per-instance model matrix (with the node transform already folded in)
-   * and tint are appended to a growable array. The first instance of a batch
-   * also queues the single deferred job that will draw the whole group, so the
-   * group renders at that point in C3's command list.
+   * and tint are appended to the open GROUP. The first instance of a group
+   * queues the single deferred job that draws the whole group, so the group
+   * renders at that point in C3's command list.
    *
-   * The job clears the group when it runs, so a mid-frame EndBatch simply draws
-   * what has accumulated and the next instance starts a fresh group. That is why
-   * this needs no frame hook.
+   * ── WHY GROUPS HAVE TO SPLIT ─────────────────────────────────────────────
+   * The job executes at the position where the group was OPENED, under the GL
+   * state C3 had queued up to that point. Anything C3 changes positionally
+   * between two instances - and does not know we deferred past - is therefore
+   * applied to the whole group. Three cases bit in a real project:
+   *
+   *   1. C3's coplanar z-fighting pass draws the first instance of a same-Z run
+   *      inside a STENCIL pass with colorMask(false). A group opened there
+   *      writes depth for every later instance but never any colour, and which
+   *      instance is "first" changes with the camera.
+   *   2. An instance with a depth-using effect (e.g. a fresnel) is pre-drawn
+   *      into a temp surface with a scissor rect around its own bbox. Later
+   *      instances land in that temp surface, clipped away.
+   *   3. The same mesh on two layers with different cameras or render targets.
+   *
+   * So a group stays open only while the renderer's positional state matches
+   * what it was opened under; otherwise a new group (and a new job) starts. A
+   * mid-frame EndBatch runs the job, which closes the group, so the next
+   * instance starts a fresh one. That is why this needs no frame hook.
    */
   addInstance(renderer, modelMatrix, instanceColor) {
     const FLOATS = ObjectBufferTop.INSTANCE_FLOATS
-    let data = this._instanceData
-    const need = (this._instanceCount + 1) * FLOATS
-    if (!data || data.length < need) {
-      const grown = new Float32Array(Math.max(need, data ? data.length * 2 : 64 * FLOATS))
-      if (data) grown.set(data)
-      data = this._instanceData = grown
+    let g = this._openGroup
+    if (g && !this._isGroupOpen(renderer, g)) g = null
+    if (!g) {
+      g = this._groupPool.pop() || ObjectBufferTop._newGroup()
+      g.count = 0
+      ObjectBufferTop._captureBatchState(renderer, g)
+      g.job = globalThis.DeferredBatch.push(renderer, ObjectBufferTop.prototype._drawInstancedNow, this, renderer, g)
+      g.jobIndex = renderer._batchPtr - 1
+      if (this._openGroup) ObjectBufferTop.stats.groupsSplit++
+      this._openGroup = g
     }
-    const at = this._instanceCount * FLOATS
+
+    let data = g.data
+    const need = (g.count + 1) * FLOATS
+    if (data.length < need) {
+      const grown = new Float32Array(Math.max(need, data.length * 2))
+      grown.set(data)
+      data = g.data = grown
+    }
+    const at = g.count * FLOATS
     data.set(modelMatrix, at)
     if (instanceColor && instanceColor.length >= 4) {
       data[at + 16] = instanceColor[0]
@@ -655,20 +686,131 @@ class ObjectBufferTop {
     } else {
       data[at + 16] = data[at + 17] = data[at + 18] = data[at + 19] = 1
     }
-    this._instanceCount++
+    g.count++
+  }
 
-    if (!this._groupQueued) {
-      this._groupQueued = true
-      globalThis.DeferredBatch.push(renderer, ObjectBufferTop.prototype._drawInstancedNow, this, renderer)
+  /**
+   * True when `g` can still take instances: its job is pending in the current
+   * batch and the renderer's positional state still matches. A job that was
+   * dropped (batch reset without executing) can never run, so its group is
+   * recycled here rather than left open forever - which is what "this mesh
+   * stopped drawing for the rest of the session" looked like.
+   */
+  _isGroupOpen(renderer, g) {
+    const job = g.job
+    const pending =
+      job &&
+      job._c3obj_b === g &&
+      renderer._batchPtr > g.jobIndex &&
+      renderer._batch[g.jobIndex] === job
+    if (!pending) {
+      g.job = null
+      g.count = 0
+      this._groupPool.push(g)
+      this._openGroup = null
+      return false
+    }
+    return ObjectBufferTop._batchStateMatches(renderer, g)
+  }
+
+  static _newGroup() {
+    return {
+      data: new Float32Array(64 * ObjectBufferTop.INSTANCE_FLOATS),
+      count: 0,
+      job: null,
+      jobIndex: -1,
+      // Positional renderer state the group was opened under.
+      rt: null,
+      tex: null,
+      blendA: 0,
+      blendB: 0,
+      cull: 0,
+      winding: 0,
+      coplanar: 0,
+      depth: false,
+      depthSampling: false,
+      // scissor(4) | viewport(4) | matP(16) | matMV(16)
+      nums: new Float64Array(40),
     }
   }
 
-  /** Upload the accumulated instances and draw them all in one call. */
-  _drawInstancedNow(renderer) {
-    this._groupQueued = false
-    const count = this._instanceCount
-    this._instanceCount = 0
+  /**
+   * Snapshot every piece of renderer state that C3 records into the batch
+   * positionally and that affects where or whether our draw lands. All of it
+   * is updated by the renderer at RECORD time (SetRenderTarget, SetScissorRect,
+   * SetDepthEnabled, Coplanar*, SetBlendMode, SetTexture, SetProjectionMatrix,
+   * SetModelViewMatrix...), so reading it here reflects what the job will run
+   * under. Blend is `_lastBlendMode` from r496 and the src/dest pair before.
+   */
+  static _captureBatchState(renderer, g) {
+    g.rt = renderer._currentRenderTarget
+    g.tex = renderer._lastTexture0
+    g.coplanar = renderer._coplanarMode
+    g.depth = renderer._isDepthEnabled
+    g.depthSampling = renderer._isDepthSamplingEnabled
+    g.blendA = renderer._lastBlendMode !== undefined ? renderer._lastBlendMode : renderer._lastSrcBlend
+    g.blendB = renderer._lastDestBlend
+    g.cull = renderer._lastCullFace
+    g.winding = renderer._lastFrontFaceWinding
+    const n = g.nums
+    const sc = renderer._lastScissorRect
+    if (sc && typeof sc.getLeft === "function") {
+      n[0] = sc.getLeft()
+      n[1] = sc.getTop()
+      n[2] = sc.getRight()
+      n[3] = sc.getBottom()
+    }
+    const vp = renderer._viewport
+    if (vp) {
+      n[4] = vp[0]
+      n[5] = vp[1]
+      n[6] = vp[2]
+      n[7] = vp[3]
+    }
+    const matP = renderer._matP
+    const matMV = renderer._matMV
+    for (let i = 0; i < 16; i++) {
+      n[8 + i] = matP[i]
+      n[24 + i] = matMV[i]
+    }
+  }
+
+  static _batchStateMatches(renderer, g) {
+    if (g.rt !== renderer._currentRenderTarget) return false
+    if (g.tex !== renderer._lastTexture0) return false
+    if (g.coplanar !== renderer._coplanarMode) return false
+    if (g.depth !== renderer._isDepthEnabled) return false
+    if (g.depthSampling !== renderer._isDepthSamplingEnabled) return false
+    const blendA = renderer._lastBlendMode !== undefined ? renderer._lastBlendMode : renderer._lastSrcBlend
+    if (g.blendA !== blendA || g.blendB !== renderer._lastDestBlend) return false
+    if (g.cull !== renderer._lastCullFace || g.winding !== renderer._lastFrontFaceWinding) return false
+    const n = g.nums
+    const sc = renderer._lastScissorRect
+    if (sc && typeof sc.getLeft === "function") {
+      if (n[0] !== sc.getLeft() || n[1] !== sc.getTop() || n[2] !== sc.getRight() || n[3] !== sc.getBottom())
+        return false
+    }
+    const vp = renderer._viewport
+    if (vp && (n[4] !== vp[0] || n[5] !== vp[1] || n[6] !== vp[2] || n[7] !== vp[3])) return false
+    const matP = renderer._matP
+    const matMV = renderer._matMV
+    for (let i = 0; i < 16; i++) {
+      if (n[8 + i] !== matP[i] || n[24 + i] !== matMV[i]) return false
+    }
+    return true
+  }
+
+  /** Upload one group's instances and draw them all in one call. */
+  _drawInstancedNow(renderer, g) {
+    if (this._openGroup === g) this._openGroup = null
+    const count = g.count
+    g.count = 0
+    g.job = null
+    this._groupPool.push(g)
     if (count === 0) return
+    // Released between record and flush (the owning instance was destroyed
+    // after it drew). Nothing to draw with.
+    if (!this.gl || !this.vertexBuffer) return
 
     const gl = renderer._gl
     if (this.vao === null) this.vao = this.createVao(renderer)
@@ -683,11 +825,7 @@ class ObjectBufferTop {
 
     gl.bindVertexArray(this.vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      this._instanceData.subarray(0, count * ObjectBufferTop.INSTANCE_FLOATS),
-      gl.DYNAMIC_DRAW
-    )
+    gl.bufferData(gl.ARRAY_BUFFER, g.data.subarray(0, count * ObjectBufferTop.INSTANCE_FLOATS), gl.DYNAMIC_DRAW)
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0, count)
     gl.bindVertexArray(null)
 
@@ -743,6 +881,13 @@ class ObjectBufferTop {
       gl.deleteVertexArray(this.vao)
       this.vao = null
     }
+    if (this.instanceBuffer) {
+      gl.deleteBuffer(this.instanceBuffer)
+      this.instanceBuffer = null
+    }
+    // A pending group job finds gl === null and draws nothing.
+    this._openGroup = null
+    this._groupPool.length = 0
     if (this.colorBuffer) {
       gl.deleteBuffer(this.colorBuffer)
       this.colorBuffer = null
@@ -803,11 +948,16 @@ ObjectBufferTop._morphCache = new WeakMap()
 // Programs whose Bones block has already been bound to the UBO binding point.
 ObjectBufferTop._boundBonesBlock = new WeakSet()
 
-ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0 }
+// groupsSplit: instanced groups that had to be closed early because C3's
+// positional render state changed under them (see addInstance). Nonzero is
+// normal in any scene with instance effects or the coplanar pass; it is not a
+// problem indicator, only a way to see the split logic is doing something.
+ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0, groupsSplit: 0 }
 ObjectBufferTop.resetStats = function () {
   ObjectBufferTop.stats.created = 0
   ObjectBufferTop.stats.reused = 0
   ObjectBufferTop.stats.unshared = 0
+  ObjectBufferTop.stats.groupsSplit = 0
 }
 
 // @ts-ignore
