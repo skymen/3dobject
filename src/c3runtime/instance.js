@@ -47,8 +47,13 @@
       this.renderOnce = false
       this.currentAnimationTime = 0
       this.currentAnimationFrame = 0
-      this.minBB = [0, 0, 0]
-      this.maxBB = [0, 0, 0]
+      // ±Infinity until a vertex pass fills them, the same sentinels
+      // getPolygons() resets to. Zeros counted as a valid (1×1) dynamic box on
+      // the first _updateBoundingBox, before any polygon pass had run, so the
+      // model spent its first frame with a degenerate box instead of the
+      // static one (issue 068).
+      this.minBB = [Infinity, Infinity, Infinity]
+      this.maxBB = [-Infinity, -Infinity, -Infinity]
       this.updateBbox = true
       this.xMinBB = [0, 0, 0]
       this.xMaxBB = [0, 0, 0]
@@ -79,6 +84,19 @@
       this._lastX = 0
       this._lastY = 0
       this._lastZ = 0
+      // Last seen rotation / scale / hierarchy-parent transform, see
+      // _transformChanged(). NaN so the first tick after load always syncs.
+      this._lastXAngle = NaN
+      this._lastYAngle = NaN
+      this._lastZAngle = NaN
+      this._lastScale = NaN
+      this._lastXScale = NaN
+      this._lastYScale = NaN
+      this._lastZScale = NaN
+      this._lastParentX = NaN
+      this._lastParentY = NaN
+      this._lastParentZ = NaN
+      this._lastParentAngle = NaN
 
       if (properties) {
         // Runtime property indices (the editor "link" property is not present here,
@@ -164,11 +182,15 @@
       }
       this.gltf.updateModelRotate(wi.GetX(), wi.GetY(), wi.GetTotalZElevation())
       this._updateBoundingBox(wi.GetX(), wi.GetY(), wi.GetTotalZElevation(), this.gpuSkinning)
+      // The box just went from whatever the layout had to the model's: tell
+      // Construct now, not on the next tick that happens to move the instance.
+      wi.SetBboxChanged()
 
       // Initialize position tracking
       this._lastX = wi.GetX()
       this._lastY = wi.GetY()
       this._lastZ = wi.GetTotalZElevation()
+      this._transformChanged(wi)
 
       this.Trigger(C3.Plugins.Mikal_3DObject.Cnds.OnLoaded)
     }
@@ -251,8 +273,66 @@
       return (maxRate + (minRate - maxRate) * t) / maxRate
     }
 
+    /**
+     * Rotation, scale and hierarchy-parent transform since the last call.
+     *
+     * The _set* setters mark the box dirty, but nothing stops a script from
+     * writing xAngle / xScale straight onto the instance - the level editor's
+     * gizmo does - and a hierarchy parent's rotation or scale reaches a child
+     * that sits on the parent's origin without changing the child's x/y/z. The
+     * SDK v1 runtime has no world-info-changed hook to catch either, so the
+     * tick diffs them. Returns true when anything moved; always syncs.
+     */
+    _transformChanged(wi) {
+      let changed = false
+      if (
+        this.xAngle !== this._lastXAngle ||
+        this.yAngle !== this._lastYAngle ||
+        this.zAngle !== this._lastZAngle ||
+        this.scale !== this._lastScale ||
+        this.xScale !== this._lastXScale ||
+        this.yScale !== this._lastYScale ||
+        this.zScale !== this._lastZScale
+      ) {
+        this._lastXAngle = this.xAngle
+        this._lastYAngle = this.yAngle
+        this._lastZAngle = this.zAngle
+        this._lastScale = this.scale
+        this._lastXScale = this.xScale
+        this._lastYScale = this.yScale
+        this._lastZScale = this.zScale
+        changed = true
+      }
+      const parent = wi.GetParent()
+      let px = NaN
+      let py = NaN
+      let pz = NaN
+      let pa = NaN
+      if (parent) {
+        px = parent.GetX()
+        py = parent.GetY()
+        pz = parent.GetTotalZElevation()
+        pa = parent.GetAngle()
+      }
+      // NaN !== NaN, so compare through Object.is to keep "no parent" stable.
+      if (
+        !Object.is(px, this._lastParentX) ||
+        !Object.is(py, this._lastParentY) ||
+        !Object.is(pz, this._lastParentZ) ||
+        !Object.is(pa, this._lastParentAngle)
+      ) {
+        this._lastParentX = px
+        this._lastParentY = py
+        this._lastParentZ = pz
+        this._lastParentAngle = pa
+        changed = true
+      }
+      return changed
+    }
+
     Tick() {
-      // Detect position changes (x, y, zElevation) and trigger bbox update
+      // Detect transform changes (x, y, zElevation, angles, scale, parent)
+      // and trigger bbox update
       if (this.loaded) {
         const wi = this.GetWorldInfo()
         const x = wi.GetX()
@@ -265,6 +345,7 @@
           this._lastZ = z
           this.updateBbox = true
         }
+        if (this._transformChanged(wi)) this.updateBbox = true
       }
 
       if (!this.loaded) {
@@ -279,6 +360,9 @@
       }
 
       // Animate gltf model
+      // Whether an animation step was requested this tick while the instance
+      // was off screen; see the bbox refresh below.
+      let animatedOffScreen = false
       if (this.loaded) {
         if (this.animationPlay && this._hasAnimationData) {
           // The action-set rate scaled for distance; identical to animationRate
@@ -286,9 +370,12 @@
           const distanceFactor = this._GetDistanceRateFactor()
           const throttled = this.animationRateExplicit || distanceFactor !== 1
           const rate = Math.max(this.animationRate * distanceFactor, 0.001)
-          const dt = this._runtime.GetDt()
+          // Per-instance dt: honours "Set object time scale" (and the object's
+          // own pause via time scale 0), which the plain runtime dt ignored.
+          const dt = this._runtime.GetDt(this.GetInstance())
           // Report the real update rate: unthrottled that is the frame rate,
-          // not zero, so the expression stays meaningful for tuning.
+          // not zero, so the expression stays meaningful for tuning. dt is 0
+          // while the object is paused; never divide by it.
           this.effectiveAnimationRate = throttled ? rate : dt > 0 ? 1 / dt : rate
           this.animationTime += dt * this.animationSpeed
           const deltaTime = this.animationTime - this.animationLastTime
@@ -296,6 +383,7 @@
           // on. The phase offset only staggers WHICH frame each instance
           // updates on, so it cannot make a timestep uneven.
           if (!throttled || deltaTime >= (1 + this.animationPhase * 0.1) / rate) {
+            const onScreen = this.IsOnScreen()
             // Advance only if the update was accepted. Marking it done before
             // the call meant a request dropped by the worker's in-flight gate
             // cost a full rate interval before the next attempt, and at high
@@ -303,12 +391,13 @@
             const applied = this.gltf.updateAnimationPolygons(
               this.animationIndex,
               this.animationTime,
-              this.IsOnScreen(),
+              onScreen,
               deltaTime,
               this.staticGeometry,
               this.gpuSkinning
             )
             if (applied !== false) this.animationLastTime = this.animationTime
+            animatedOffScreen = !onScreen
           }
           this.renderOnce = false
           // } else if (this.renderOnce || (this.workerAnimation))
@@ -323,7 +412,14 @@
       // Update transformed bounding box (xMinBB/xMaxBB) even when offscreen
       // This ensures bbox values are always up-to-date for visibility testing
       // and for external queries (e.g., getObjectBounds)
-      if (this.updateBbox) this.refreshBoundingBox()
+      if (this.updateBbox) {
+        this.refreshBoundingBox()
+        // Off screen no pose is requested, so the box above came from the last
+        // pose the instance had on screen. Keep it dirty so the first on-screen
+        // Draw recomputes it before anything relies on it, instead of waiting
+        // for the next transform change.
+        if (animatedOffScreen) this.updateBbox = true
+      }
 
       // Restore the element array buffer, but only when we actually drew (our
       // static-geometry path rebinds it) and only on WebGL (no _gl on WebGPU)
@@ -384,20 +480,29 @@
           this.runtime.UpdateRender()
           return
         }
-        const originalProgram = renderer.GetProgram()
-        // Force a SetProgram batch job even when the 3D shader is already the
-        // last-set program.
-        //
-        // SetProgram is equality-guarded (`if (this._lastProgram === t) return`),
-        // so a second instance in a row would push no job at all. That was fine
-        // when this path flushed immediately — the program was already bound and
-        // its uniforms current. Deferred, it is not: DoSetProgram is what
-        // uploads the matP/matMV that DoSetProjection/DoSetModelView marked
-        // stale, so with no job queued the deferred draw executes against the
-        // PREVIOUS frame's matrices. Invisible with a static camera, and it
-        // makes models vanish while the camera moves.
-        if (globalThis.DeferredBatch?.isEnabled?.()) renderer.ResetLastProgram()
-        renderer.SetProgram(globalThis.cached3DObjectShader)
+        const shader = globalThis.cached3DObjectShader
+        const deferred = !!globalThis.DeferredBatch?.isEnabled?.()
+        // SetProgram is equality-guarded (`if (this._lastProgram === t) return`).
+        // Deferred, a skipped job is only safe when the 3D shader's matP/matMV
+        // are still current: DoSetProgram is what re-uploads them after a
+        // DoSetProjection/DoSetModelView. So force a job when the transform
+        // changed since the last one (`_m3dXform`, counted by DeferredBatch),
+        // and otherwise let a run of instances share the bound program. The
+        // original program is restored lazily (see DeferredBatch) so a run of
+        // models costs one switch in and one out, not two per instance.
+        let originalProgram = null
+        const xform = renderer._m3dXform | 0
+        if (renderer.GetProgram() !== shader) {
+          originalProgram = renderer.GetProgram()
+          renderer.SetProgram(shader)
+          renderer._m3dXformAtSet = xform
+        } else if (deferred && renderer._m3dXformAtSet !== xform) {
+          renderer.ResetLastProgram()
+          renderer.SetProgram(shader)
+          renderer._m3dXformAtSet = xform
+        }
+        // Deferred: the restore below is recorded by DeferredBatch's
+        // SetProgram wrapper and pushed only when something needs it.
         try {
           this.gltf.render(
             renderer,
@@ -465,12 +570,12 @@
       const useStaticBbox = gpuSkinning || !hasValidDynamicBbox
 
       if (useStaticBbox) {
-        // Union the pose-aware skinned bounds with the bind-pose box: the posed
-        // bounds only cover skinned nodes, so a model that mixes skinned and
-        // static meshes would otherwise lose the static ones. The union is never
-        // smaller than either, so it cannot cull early.
+        // Union the pose-aware skinned bounds with the bind-pose box of the
+        // UNSKINNED meshes only: the posed bounds cover every skinned node, and
+        // adding the skinned bind pose back (a T-pose is much wider than a run
+        // cycle) inflated the box. The union is never smaller than either part.
         const posed = this._poseLocalBounds()
-        let enabled = this._enabledLocalBounds()
+        let enabled = this._enabledLocalBounds(!!posed)
         if (posed && enabled) {
           enabled = {
             min: [
@@ -824,16 +929,19 @@
     // bounding box so a character shows the box of its active skin rather than the
     // union of every variant. Cached; invalidated when nodes are toggled.
     /**
-     * Bind-pose radius of every joint, computed once per model.
+     * Bind-pose box of every joint, in that joint's own space, computed once
+     * per model.
      *
-     * For each joint we take its bind position (the translation of the inverse
-     * of its inverse-bind matrix) and the furthest vertex weighted to it. A
-     * posed vertex is `boneMatrix * v_bind`, so it stays inside a sphere at
-     * `boneMatrix * p_bind` with that radius scaled by the matrix's basis - which
-     * is what _poseLocalBounds() unions up.
+     * For each joint, every vertex weighted to it is moved into joint space with
+     * the inverse-bind matrix and the min/max kept. A posed vertex is
+     * `boneMatrix * v_bind = (inv(node) * world(joint)) * (invBind * v_bind)`, so
+     * it stays inside that joint box pushed through `inv(node) * world(joint)`.
+     * An oriented box per joint follows a limb far more tightly than a sphere,
+     * which reaches as far backwards along a bone as the bone is long.
      *
      * Cached on the shared inverse-bind accessor, so instances of the same model
-     * pay for it once.
+     * pay for it once. The worker gets boxMin/boxMax; the main-thread fallback
+     * also needs `bind` (the inverse of invBind) to undo invBind from boneMatrix.
      */
     _jointRadii(skin) {
       if (!skin || !skin.joints || !skin.inverseBindMatrices || !skin.inverseBindMatrices.data) return null
@@ -844,14 +952,14 @@
       const mat4 = globalThis.glMatrix3D.mat4
       const vec3 = globalThis.glMatrix3D.vec3
       const joints = skin.joints
-      const positions = new Float32Array(joints.length * 3)
-      const radii = new Float32Array(joints.length)
+      const n = joints.length
+      const boxMin = new Float32Array(n * 3).fill(Infinity)
+      const boxMax = new Float32Array(n * 3).fill(-Infinity)
+      const bind = new Float32Array(n * 16)
       const inv = mat4.create()
-      for (let j = 0; j < joints.length; j++) {
-        if (!mat4.invert(inv, joints[j].invBindMatrix)) continue
-        positions[j * 3] = inv[12]
-        positions[j * 3 + 1] = inv[13]
-        positions[j * 3 + 2] = inv[14]
+      for (let j = 0; j < n; j++) {
+        if (!joints[j].invBindMatrix || !mat4.invert(inv, joints[j].invBindMatrix)) mat4.identity(inv)
+        for (let q = 0; q < 16; q++) bind[j * 16 + q] = inv[q]
       }
 
       const gltf = this.gltf?.gltfData
@@ -863,24 +971,26 @@
           const jnt = prim.attributes.JOINTS_0 && prim.attributes.JOINTS_0.data
           const wgt = prim.attributes.WEIGHTS_0 && prim.attributes.WEIGHTS_0.data
           if (!pos || !jnt || !wgt) continue
-          for (let i = 0, n = pos.length / 3; i < n; i++) {
+          for (let i = 0, cnt = pos.length / 3; i < cnt; i++) {
             for (let k = 0; k < 4; k++) {
-              // Ignore near-zero influences: they drag a joint's radius out to
-              // the far side of the mesh for no visible deformation.
+              // Ignore near-zero influences: they drag a joint's box out to the
+              // far side of the mesh for no visible deformation.
               if (wgt[i * 4 + k] < 0.05) continue
               const j = jnt[i * 4 + k]
-              if (j >= joints.length) continue
-              v[0] = pos[i * 3] - positions[j * 3]
-              v[1] = pos[i * 3 + 1] - positions[j * 3 + 1]
-              v[2] = pos[i * 3 + 2] - positions[j * 3 + 2]
-              const d = Math.hypot(v[0], v[1], v[2])
-              if (d > radii[j]) radii[j] = d
+              if (j >= n || !joints[j].invBindMatrix) continue
+              vec3.set(v, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
+              vec3.transformMat4(v, v, joints[j].invBindMatrix)
+              const o = j * 3
+              for (let a = 0; a < 3; a++) {
+                if (v[a] < boxMin[o + a]) boxMin[o + a] = v[a]
+                if (v[a] > boxMax[o + a]) boxMax[o + a] = v[a]
+              }
             }
           }
         }
       }
 
-      entry = { positions, radii }
+      entry = { boxMin, boxMax, bind }
       jointRadiiCache.set(key, entry)
       return entry
     }
@@ -899,45 +1009,48 @@
       // Worker mode: the worker bounds the real pose and sends it with the bones.
       if (this.gltf && typeof this.gltf.getPosedBounds === "function") return this.gltf.getPosedBounds()
       const vec3 = globalThis.glMatrix3D.vec3
+      const mat4 = globalThis.glMatrix3D.mat4
       const min = [Infinity, Infinity, Infinity]
       const max = [-Infinity, -Infinity, -Infinity]
-      const centre = vec3.create()
-      let any = false
-      // boneMatrix is relative to the skinned node (inv(node) * joint * invBind)
-      // and the shader applies the scene root TRS (uRootNodeXform) on top; bound
-      // in that same space or a rotated/scaled root puts the box elsewhere.
+      const p = vec3.create()
+      const m = mat4.create()
+      // boneMatrix is inv(node) * world(joint) * invBind and the shader applies
+      // the scene root TRS (uRootNodeXform) on top. A joint-space box corner
+      // therefore goes through root * boneMatrix * bind(joint).
       const root = this.gltf.rootNodeXform
-      const rootScale = root ? Math.max(Math.hypot(root[0], root[1], root[2]), Math.hypot(root[4], root[5], root[6]), Math.hypot(root[8], root[9], root[10])) : 1
+      let any = false
 
       for (const node of gltf.skinnedNodes) {
         if (node.disabled) continue
-        const radii = this._jointRadii(node.skin)
-        if (!radii) continue
+        const boxes = this._jointRadii(node.skin)
+        if (!boxes) continue
         const joints = node.skin.joints
         for (let j = 0; j < joints.length; j++) {
-          const m = joints[j].boneMatrix
-          if (!m) continue
-          centre[0] = radii.positions[j * 3]
-          centre[1] = radii.positions[j * 3 + 1]
-          centre[2] = radii.positions[j * 3 + 2]
-          vec3.transformMat4(centre, centre, m)
-          if (root) vec3.transformMat4(centre, centre, root)
-          const sx = Math.hypot(m[0], m[1], m[2])
-          const sy = Math.hypot(m[4], m[5], m[6])
-          const sz = Math.hypot(m[8], m[9], m[10])
-          const r = radii.radii[j] * Math.max(sx, sy, sz) * rootScale
+          const bone = joints[j].boneMatrix
+          if (!bone || boxes.boxMin[j * 3] === Infinity) continue
+          mat4.multiply(m, bone, boxes.bind.subarray(j * 16, j * 16 + 16))
+          if (root) mat4.multiply(m, root, m)
           any = true
-          for (let a = 0; a < 3; a++) {
-            if (centre[a] - r < min[a]) min[a] = centre[a] - r
-            if (centre[a] + r > max[a]) max[a] = centre[a] + r
+          const o = j * 3
+          for (let c = 0; c < 8; c++) {
+            p[0] = c & 1 ? boxes.boxMax[o] : boxes.boxMin[o]
+            p[1] = c & 2 ? boxes.boxMax[o + 1] : boxes.boxMin[o + 1]
+            p[2] = c & 4 ? boxes.boxMax[o + 2] : boxes.boxMin[o + 2]
+            vec3.transformMat4(p, p, m)
+            for (let a = 0; a < 3; a++) {
+              if (p[a] < min[a]) min[a] = p[a]
+              if (p[a] > max[a]) max[a] = p[a]
+            }
           }
         }
       }
       return any ? { min, max } : null
     }
 
-    _enabledLocalBounds() {
-      if (this._enabledBoundsCache !== undefined) return this._enabledBoundsCache
+    /** @param {boolean} skipSkinned leave out skinned meshes (the posed bounds cover them) */
+    _enabledLocalBounds(skipSkinned = false) {
+      const cacheKey = skipSkinned ? "_enabledStaticBoundsCache" : "_enabledBoundsCache"
+      if (this[cacheKey] !== undefined) return this[cacheKey]
       const gltf = this.gltf?.gltfData
       if (!gltf || !gltf.nodes || !this._ensureNodeMaps()) return null
       const mat4 = globalThis.glMatrix3D.mat4
@@ -948,7 +1061,7 @@
       const local = mat4.create()
       const chain = mat4.create()
       for (const node of gltf.nodes) {
-        if (!node.mesh || node.disabled) continue
+        if (!node.mesh || node.disabled || (skipSkinned && node.skin)) continue
         let matrix = null
         if (!node.skin) {
           // Unskinned meshes render through their node chain
@@ -979,12 +1092,13 @@
         }
       }
       const valid = mn.every(isFinite) && mx.every(isFinite)
-      this._enabledBoundsCache = valid ? { min: mn, max: mx } : null
-      return this._enabledBoundsCache
+      this[cacheKey] = valid ? { min: mn, max: mx } : null
+      return this[cacheKey]
     }
 
     _invalidateEnabledBounds() {
       this._enabledBoundsCache = undefined
+      this._enabledStaticBoundsCache = undefined
       this.updateBbox = true
     }
 

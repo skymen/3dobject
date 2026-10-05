@@ -112,8 +112,87 @@ class DeferredBatchTop {
     }
 
     DeferredBatchTop._origRun = origRun
+    DeferredBatchTop._installProgramTracking(renderer)
     DeferredBatchTop._installed = true
     return true
+  }
+
+  /**
+   * Program-switch bookkeeping for Instance.Draw.
+   *
+   * A run of 3DObject instances used to cost two useProgram per instance:
+   * ResetLastProgram + SetProgram(3D shader) on the way in (so the deferred
+   * draw got fresh matP/matMV) and SetProgram(original) on the way out --
+   * and C3's per-instance state group sets the texture-fill program again
+   * before every instance, so the pair was unavoidable. With a level of 600
+   * static props that was ~1200 program switches for a handful of instanced
+   * draws.
+   *
+   *  - `_m3dXform` counts transform changes (SetProjectionMatrix /
+   *    SetModelViewMatrix). Draw only forces a new SetProgram job when the
+   *    transform changed since the last one for the 3D shader; otherwise the
+   *    program is already bound with current matrices.
+   *  - While the 3D shader is the last program set, any SetProgram(other) is
+   *    only *recorded* (`_m3dPending`) and pushed as a job right before it is
+   *    needed: an engine draw (_AddToDrawBatch), a program-parameter job, or a
+   *    flush (EndBatch, which raw-GL callers rely on). Only the texture-fill
+   *    program is deferred; effect and other programs are set immediately.
+   *    A run of models thus emits one switch in and one out.
+   */
+  static _installProgramTracking(renderer) {
+    const proto = Object.getPrototypeOf(renderer)
+    if (!proto || proto._m3dProgramTracking) return
+    proto._m3dProgramTracking = true
+    for (const name of ["SetProjectionMatrix", "SetModelViewMatrix"]) {
+      const original = proto[name]
+      if (typeof original !== "function") continue
+      proto[name] = function (m) {
+        this._m3dXform = (this._m3dXform | 0) + 1
+        return original.call(this, m)
+      }
+    }
+    const setProgram = proto.SetProgram
+    DeferredBatchTop._origSetProgram = setProgram
+    proto.SetProgram = function (program) {
+      const shader = globalThis.cached3DObjectShader
+      // Only the engine's texture-fill program is deferred: it is what the
+      // per-instance state group and Draw's restore keep re-setting. Anything
+      // else (an effect program, colour fill, points, a user program) is set
+      // at once, because the jobs that follow it (SetProgramParameters and the
+      // other currentShader-dependent jobs) must run on that program. 3.0.42
+      // deferred every program and broke models drawn with an effect.
+      if (shader && this._lastProgram === shader && program !== shader && program === this._spTextureFill && DeferredBatchTop.isEnabled()) {
+        // Deferred: the 3D shader stays bound until something needs this one.
+        this._m3dPending = program
+        return
+      }
+      this._m3dPending = null
+      return setProgram.call(this, program)
+    }
+    // While a switch is pending, the engine's own view of the current
+    // program must be the pending one: Shape3D re-applies GetProgram() per
+    // face, and reading the still-bound 3D shader back made it SetProgram
+    // the 3D shader, dropping the pending restore. Its quads then drew under
+    // the model program and vanished (3.0.43, tinted floor strips in a hub).
+    const getProgram = proto.GetProgram
+    proto.GetProgram = function () { return this._m3dPending || getProgram.call(this) }
+    const flushBefore = (name) => {
+      const original = proto[name]
+      if (typeof original !== "function") return
+      proto[name] = function (...args) { DeferredBatchTop.flushProgramRestore(this); return original.apply(this, args) }
+    }
+    flushBefore("_AddToDrawBatch")
+    flushBefore("EndBatch")
+    // Every renderer call whose batch job reads batchState.currentShader.
+    for (const name of ["SetProgramCustomParameters", "SetProgramParameters", "SetGradientColor", "SetEllipseParams", "SetTilemapInfo", "SetTileRandomizationInfo"]) flushBefore(name)
+  }
+
+  /** Push the SetProgram job a deferred request left pending, if any. */
+  static flushProgramRestore(renderer) {
+    const program = renderer._m3dPending
+    if (!program) return
+    renderer._m3dPending = null
+    DeferredBatchTop._origSetProgram.call(renderer, program) // not the deferring wrapper
   }
 
   /** Restore the engine's original Run. Mainly for debugging. */

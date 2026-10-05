@@ -845,8 +845,10 @@ class GltfModelWTop {
         if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
           drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
         }
-        if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-          drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
+        if (drawNormals.length === 0) {
+          // Falls back to generated smooth normals when the model has none.
+          const normalData = globalThis.gltfPrimitiveNormals(node.mesh.primitives[i])
+          if (normalData) drawNormals.push(sharedOrCopy(normalData, Float32Array))
         }
         if (gpuSkinning && drawJoints.length === 0 && "JOINTS_0" in node.mesh.primitives[i].attributes) {
           const jointsData = sharedOrCopy(node.mesh.primitives[i].attributes.JOINTS_0.data, Uint16Array)
@@ -924,9 +926,9 @@ class GltfModelWTop {
   }
 
   /**
-   * Bind-pose joint position and radius per skin group, so the worker can
-   * bound the posed model. Uses the instance's cached _jointRadii (computed
-   * once per model from the vertex weights).
+   * Per-joint bind-space boxes per skin group, so the worker can bound the
+   * posed model. Uses the instance's cached _jointRadii (computed once per
+   * model from the vertex weights).
    */
   _groupRadiiPayload() {
     const layout = this._poseLayout
@@ -935,7 +937,7 @@ class GltfModelWTop {
     return layout.groups.map((grp) => {
       const node = nodes[grp.nodes[0]]
       const r = typeof inst._jointRadii === "function" ? inst._jointRadii(node.skin) : null
-      return r ? { positions: r.positions, radii: r.radii } : null
+      return r ? { boxMin: r.boxMin, boxMax: r.boxMax } : null
     })
   }
 

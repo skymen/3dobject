@@ -45,6 +45,9 @@ class ObjectBufferTop {
     this.morphTargets = mesh.morphTargets ? mesh.morphTargets[primitiveIndex] : null
     this.morphVertexCount = vertexData ? vertexData.length / 3 : 0
     this.instanceBuffer = null
+    // Copy of the last instance-buffer upload, see _drawInstancedNow.
+    this._uploaded = null
+    this._uploadedFloats = 0
     this.canInstance = false
     // Instanced-draw groups. See addInstance().
     this._openGroup = null
@@ -713,6 +716,21 @@ class ObjectBufferTop {
     return ObjectBufferTop._batchStateMatches(renderer, g)
   }
 
+  /** True when `data[0..floats)` equals the last instance-buffer upload. */
+  _sameAsUploaded(data, floats) {
+    const last = this._uploaded
+    if (!last || this._uploadedFloats !== floats) return false
+    for (let i = 0; i < floats; i++) if (last[i] !== data[i]) return false
+    return true
+  }
+
+  _rememberUploaded(data, floats) {
+    let last = this._uploaded
+    if (!last || last.length < floats) last = this._uploaded = new Float32Array(Math.max(floats, 64 * ObjectBufferTop.INSTANCE_FLOATS))
+    last.set(data.subarray(0, floats))
+    this._uploadedFloats = floats
+  }
+
   static _newGroup() {
     return {
       data: new Float32Array(64 * ObjectBufferTop.INSTANCE_FLOATS),
@@ -824,8 +842,21 @@ class ObjectBufferTop {
     uc.setFloat(gl, shaderProgram, "uHasVertexColors", this.hasVertexColors ? 1.0 : 0.0)
 
     gl.bindVertexArray(this.vao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, g.data.subarray(0, count * ObjectBufferTop.INSTANCE_FLOATS), gl.DYNAMIC_DRAW)
+    // Skip the upload when the group holds exactly what the instance buffer
+    // already has. A static prop's matrices do not change between frames,
+    // and a shadow pass (or any second render of the scene) submits the same
+    // group again within the frame; each of those was a bufferData per mesh
+    // per pass, which on mobile drivers is an allocation as much as a copy.
+    // The compare is 20 floats per instance, far cheaper than the upload.
+    const floats = count * ObjectBufferTop.INSTANCE_FLOATS
+    const data = g.data
+    if (!this._sameAsUploaded(data, floats)) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
+      gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, floats), gl.DYNAMIC_DRAW)
+      this._rememberUploaded(data, floats)
+    } else {
+      ObjectBufferTop.stats.uploadsSkipped++
+    }
     gl.drawElementsInstanced(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0, count)
     gl.bindVertexArray(null)
 
@@ -885,6 +916,8 @@ class ObjectBufferTop {
       gl.deleteBuffer(this.instanceBuffer)
       this.instanceBuffer = null
     }
+    this._uploaded = null
+    this._uploadedFloats = 0
     // A pending group job finds gl === null and draws nothing.
     this._openGroup = null
     this._groupPool.length = 0
@@ -952,12 +985,13 @@ ObjectBufferTop._boundBonesBlock = new WeakSet()
 // positional render state changed under them (see addInstance). Nonzero is
 // normal in any scene with instance effects or the coplanar pass; it is not a
 // problem indicator, only a way to see the split logic is doing something.
-ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0, groupsSplit: 0 }
+ObjectBufferTop.stats = { created: 0, reused: 0, unshared: 0, groupsSplit: 0, uploadsSkipped: 0 }
 ObjectBufferTop.resetStats = function () {
   ObjectBufferTop.stats.created = 0
   ObjectBufferTop.stats.reused = 0
   ObjectBufferTop.stats.unshared = 0
   ObjectBufferTop.stats.groupsSplit = 0
+  ObjectBufferTop.stats.uploadsSkipped = 0
 }
 
 // @ts-ignore

@@ -758,8 +758,10 @@ class GltfModelTop {
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
               drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
             }
-            if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-              drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
+            if (drawNormals.length === 0) {
+              // Falls back to generated smooth normals when the model has none.
+              const normalData = globalThis.gltfPrimitiveNormals(node.mesh.primitives[i])
+              if (normalData) drawNormals.push(sharedOrCopy(normalData, Float32Array))
             }
 
             if (drawIndices.length === 0)
@@ -1150,8 +1152,10 @@ class GltfModelTop {
             if (drawColors.length === 0 && "COLOR_0" in node.mesh.primitives[i].attributes) {
               drawColors.push(sharedOrCopy(node.mesh.primitives[i].attributes.COLOR_0.data, Float32Array))
             }
-            if (drawNormals.length === 0 && "NORMAL" in node.mesh.primitives[i].attributes) {
-              drawNormals.push(sharedOrCopy(node.mesh.primitives[i].attributes.NORMAL.data, Float32Array))
+            if (drawNormals.length === 0) {
+              // Falls back to generated smooth normals when the model has none.
+              const normalData = globalThis.gltfPrimitiveNormals(node.mesh.primitives[i])
+              if (normalData) drawNormals.push(sharedOrCopy(normalData, Float32Array))
             }
             if (gpuSkinning && drawJoints.length === 0 && "JOINTS_0" in node.mesh.primitives[i].attributes) {
               const jointsData = sharedOrCopy(node.mesh.primitives[i].attributes.JOINTS_0.data, Uint16Array)

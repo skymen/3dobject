@@ -494,6 +494,7 @@ let graph = null
 // Per skin group: { positions: Float32Array(joints*3), radii: Float32Array(joints) }
 let groupRadii = null
 const tmp16 = new Float32Array(16)
+const tmpJ = new Float32Array(16)
 
 // ---- flat mat4 helpers on (array, offset) ----
 
@@ -706,6 +707,17 @@ function computePose(rec, out, base) {
   // Root transform (legacy "parentMatrix"): the scene's first root node's TRS
   if (graph.rootIdx >= 0) composeWorldAt(tmp16, 0, null, 0, trs, graph.rootIdx * TRS_STRIDE)
   else for (let q = 0; q < 16; q++) tmp16[q] = q % 5 === 0 ? 1 : 0
+  // Posed bounds, accumulated while the bones are built. Each joint owns a box
+  // in its own bind space (groupRadii, from the vertex weights); the GPU takes a
+  // joint-space point through inv(head) * world(joint) (the bone before invBind
+  // is folded in) and then uRootNodeXform, so push the box corners through
+  // root * inv(head) * world(joint) and union. Oriented per-joint boxes follow
+  // limbs far more tightly than spheres, and bounding in the space the shader
+  // draws in keeps a rotated or scaled root (Blender rigs) from misplacing it.
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+  const disabled = rec.disabledNodes
+  const nodes = graph.nodes
   const groups = graph.groups
   for (let gi = 0; gi < groups.length; gi++) {
     const grp = groups[gi]
@@ -716,95 +728,47 @@ function computePose(rec, out, base) {
     }
     const joints = grp.joints
     const invBind = grp.invBind
+    const rad = groupRadii && groupRadii[gi]
+    // The bounds of a skin do not depend on which parts show; only a fully
+    // hidden group drops out.
+    let bound = false
+    if (rad && disabled.size) {
+      for (let i = 0; i < grp.nodes.length; i++) if (!disabled.get(nodes[grp.nodes[i]].name)) { bound = true; break }
+    } else bound = !!rad
     for (let j = 0; j < joints.length; j++, k += 16) {
-      // bone = inv(head) * world(joint) * invBind(joint)
+      // inv(head) * world(joint)
       mul4At(out, k, rec.inv, gi * 16, mat, joints[j] * 16)
+      if (bound && rad.boxMin[j * 3] !== Infinity) {
+        mul4At(tmpJ, 0, tmp16, 0, out, k)
+        const bmin = rad.boxMin, bmax = rad.boxMax, o = j * 3
+        for (let c = 0; c < 8; c++) {
+          const px = c & 1 ? bmax[o] : bmin[o]
+          const py = c & 2 ? bmax[o + 1] : bmin[o + 1]
+          const pz = c & 4 ? bmax[o + 2] : bmin[o + 2]
+          const wx = tmpJ[0] * px + tmpJ[4] * py + tmpJ[8] * pz + tmpJ[12]
+          const wy = tmpJ[1] * px + tmpJ[5] * py + tmpJ[9] * pz + tmpJ[13]
+          const wz = tmpJ[2] * px + tmpJ[6] * py + tmpJ[10] * pz + tmpJ[14]
+          if (wx < minX) minX = wx
+          if (wy < minY) minY = wy
+          if (wz < minZ) minZ = wz
+          if (wx > maxX) maxX = wx
+          if (wy > maxY) maxY = wy
+          if (wz > maxZ) maxZ = wz
+        }
+      }
+      // bone = inv(head) * world(joint) * invBind(joint)
       mul4At(out, k, out, k, invBind, j * 16)
     }
     for (let q = 0; q < 16; q++) out[k + q] = tmp16[q]
     k += 16
   }
-  computePosedBounds(rec, out, base)
-}
-
-// Reads the bone matrices computePose just wrote into `out`, so no matrix maths
-// is repeated: per joint one transform of the bind position and three column
-// lengths for the radius scale.
-//
-// Bone matrices are relative to the group head (inv(head) * world(joint) *
-// invBind) and the shader multiplies the skinned vertex by uRootNodeXform - the
-// scene root TRS computePose left in tmp16 - afterwards. Bound each group in
-// head space, then push that box through the same root transform, otherwise a
-// model whose root is rotated or scaled (a Blender rig exported with a 90 deg X
-// rotation and a unit scale, say) gets a box in the wrong space that never
-// follows the pose, and Construct clips the model at the bind-pose box.
-function computePosedBounds(rec, out, base) {
   const at = base + graph.boundsOffset
-  let minX = Infinity, minY = Infinity, minZ = Infinity
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
-  const groups = graph.groups
-  const disabled = rec.disabledNodes
-  const nodes = graph.nodes
-  const root = tmp16
-  let m = base + graph.unskinned.length * 16
-  for (let gi = 0; gi < groups.length; gi++) {
-    const grp = groups[gi]
-    const nJoints = grp.joints.length
-    const rad = groupRadii && groupRadii[gi]
-    // The bounds of a skin do not depend on which parts show; only a fully
-    // hidden group drops out.
-    let anyEnabled = false
-    if (rad && disabled.size) {
-      for (let i = 0; i < grp.nodes.length; i++) if (!disabled.get(nodes[grp.nodes[i]].name)) { anyEnabled = true; break }
-    } else anyEnabled = !!rad
-    if (!anyEnabled) {
-      m += (nJoints + 1) * 16
-      continue
-    }
-    const pos = rad.positions
-    const radii = rad.radii
-    let gMinX = Infinity, gMinY = Infinity, gMinZ = Infinity
-    let gMaxX = -Infinity, gMaxY = -Infinity, gMaxZ = -Infinity
-    for (let j = 0; j < nJoints; j++, m += 16) {
-      const px = pos[j * 3], py = pos[j * 3 + 1], pz = pos[j * 3 + 2]
-      const cx = out[m] * px + out[m + 4] * py + out[m + 8] * pz + out[m + 12]
-      const cy = out[m + 1] * px + out[m + 5] * py + out[m + 9] * pz + out[m + 13]
-      const cz = out[m + 2] * px + out[m + 6] * py + out[m + 10] * pz + out[m + 14]
-      const sx = Math.hypot(out[m], out[m + 1], out[m + 2])
-      const sy = Math.hypot(out[m + 4], out[m + 5], out[m + 6])
-      const sz = Math.hypot(out[m + 8], out[m + 9], out[m + 10])
-      const r = radii[j] * Math.max(sx, sy, sz)
-      if (cx - r < gMinX) gMinX = cx - r
-      if (cy - r < gMinY) gMinY = cy - r
-      if (cz - r < gMinZ) gMinZ = cz - r
-      if (cx + r > gMaxX) gMaxX = cx + r
-      if (cy + r > gMaxY) gMaxY = cy + r
-      if (cz + r > gMaxZ) gMaxZ = cz + r
-    }
-    m += 16 // root transform slot
-    if (gMinX === Infinity) continue
-    // Eight corners of the head-space box through the root transform.
-    for (let c = 0; c < 8; c++) {
-      const px = c & 1 ? gMaxX : gMinX
-      const py = c & 2 ? gMaxY : gMinY
-      const pz = c & 4 ? gMaxZ : gMinZ
-      const wx = root[0] * px + root[4] * py + root[8] * pz + root[12]
-      const wy = root[1] * px + root[5] * py + root[9] * pz + root[13]
-      const wz = root[2] * px + root[6] * py + root[10] * pz + root[14]
-      if (wx < minX) minX = wx
-      if (wy < minY) minY = wy
-      if (wz < minZ) minZ = wz
-      if (wx > maxX) maxX = wx
-      if (wy > maxY) maxY = wy
-      if (wz > maxZ) maxZ = wz
-    }
-  }
   if (minX === Infinity) {
-    out[at] = NaN
-    return
+    out[at] = NaN // no skinned bounds (all groups hidden or no boxes)
+  } else {
+    out[at] = minX; out[at + 1] = minY; out[at + 2] = minZ
+    out[at + 3] = maxX; out[at + 4] = maxY; out[at + 5] = maxZ
   }
-  out[at] = minX; out[at + 1] = minY; out[at + 2] = minZ
-  out[at + 3] = maxX; out[at + 4] = maxY; out[at + 5] = maxZ
 }
 
 function onBatch(e) {
