@@ -9,6 +9,13 @@
   // instance of a model reuses one computation. See _jointRadii().
   const jointRadiiCache = new WeakMap()
 
+  // Scratch matrices and constants for node world reads (_nodeWorld, _chainMatrix); gl-matrix types (mat4.create)
+  let _nodeWorldTmp = null, _nodeLocalTmp = null, _mIdentity = null, _drawnTmp = null
+  // _updateBoundingBox: scratch vectors and the box corners' order (x, y max per corner; z max for the last four)
+  let _bbOut = null, _bbPoint = null
+  const BB_CORNER_X = [0, 1, 1, 0, 0, 1, 1, 0], BB_CORNER_Y = [0, 0, 1, 1, 0, 0, 1, 1]
+  const Q_IDENTITY = [0, 0, 0, 1], V_ZERO = [0, 0, 0], V_ONE = [1, 1, 1]
+
   C3.Plugins.Mikal_3DObject.Instance = class Object3DInstance extends C3.SDKWorldInstanceBase {
     constructor(inst, properties) {
       super(inst)
@@ -76,6 +83,18 @@
       // Hide every node as soon as the model is parsed, so "On model loaded"
       // can enable just the ones wanted. See GltfModel(W).setAllNodesDisabled().
       this.startHidden = false
+      // Bone rotation offsets: node name -> [x, y, z, w], multiplied onto the sampled local rotation each frame
+      this._boneOffsets = new Map()
+      this._boneOffsetsVersion = 0
+      // Blend weights (blend trees): animation name -> weight. When any is set, the pose is the weighted mix
+      // of those clips, sampled at the playing animation's phase (all clips need the same channel layout)
+      this._blendWeights = new Map()
+      this._blendPhases = new Map() // name -> fixed phase (0..1) of a weighted clip, instead of the playing clip's
+      // IK chains (script API setIKChain): name -> { upper, lower, end, target, pole, weight, endAxis, endDir, endWeight }
+      this._ikChains = new Map()
+      // jiggle bones (script API setJiggleBone): name -> { stiffness, damping, maxAngle, length, gravity, axis, anchor, anchorWeight, anchorPose, anchorTilt, limitAxis, limitAngle, drag }
+      this._jiggle = new Map()
+      this._blendWeightsVersion = 0
       this.useBoneBoundingBox = true // When true, use bone-based bbox; when false, use static bbox
       this._released = false
       this._drewCustomBuffers = false
@@ -179,6 +198,12 @@
       this.runtime.UpdateRender()
       if (this.gltf.getAnimationNames().length > 0) {
         this.animationName = this.gltf.getAnimationNames()[0]
+      }
+      if (this._pendingPlay) {
+        const [name, loop] = this._pendingPlay
+        this._pendingPlay = null
+        // @ts-ignore
+        self.C3.Plugins.Mikal_3DObject.Acts.PlayAnimation.call(this, name, loop)
       }
       this.gltf.updateModelRotate(wi.GetX(), wi.GetY(), wi.GetTotalZElevation())
       this._updateBoundingBox(wi.GetX(), wi.GetY(), wi.GetTotalZElevation(), this.gpuSkinning)
@@ -377,7 +402,7 @@
           // not zero, so the expression stays meaningful for tuning. dt is 0
           // while the object is paused; never divide by it.
           this.effectiveAnimationRate = throttled ? rate : dt > 0 ? 1 / dt : rate
-          this.animationTime += dt * this.animationSpeed
+          if (Number.isFinite(this.animationSpeed)) this.animationTime += dt * this.animationSpeed
           const deltaTime = this.animationTime - this.animationLastTime
           // Unthrottled unless the project set a rate or distance-based rate is
           // on. The phase offset only staggers WHICH frame each instance
@@ -463,7 +488,13 @@
           .catch((err) => console.error("[3DObject] texture load failed", err))
       }
 
-      if (Object.keys(textures).length === 0) {
+      // (for..in, not Object.keys: an array per draw per pass)
+      let noMaterials = true
+      for (const _ in textures) {
+        noMaterials = false
+        break
+      }
+      if (noMaterials) {
         // Model has no materials: fall back to the object's image texture
         renderer.SetTexture(texture)
       }
@@ -577,18 +608,15 @@
         const posed = this._poseLocalBounds()
         let enabled = this._enabledLocalBounds(!!posed)
         if (posed && enabled) {
-          enabled = {
-            min: [
-              Math.min(posed.min[0], enabled.min[0]),
-              Math.min(posed.min[1], enabled.min[1]),
-              Math.min(posed.min[2], enabled.min[2]),
-            ],
-            max: [
-              Math.max(posed.max[0], enabled.max[0]),
-              Math.max(posed.max[1], enabled.max[1]),
-              Math.max(posed.max[2], enabled.max[2]),
-            ],
-          }
+          // (into this instance's scratch box: it is only read just below)
+          const u = this._bbUnion || (this._bbUnion = { min: [0, 0, 0], max: [0, 0, 0] })
+          u.min[0] = Math.min(posed.min[0], enabled.min[0])
+          u.min[1] = Math.min(posed.min[1], enabled.min[1])
+          u.min[2] = Math.min(posed.min[2], enabled.min[2])
+          u.max[0] = Math.max(posed.max[0], enabled.max[0])
+          u.max[1] = Math.max(posed.max[1], enabled.max[1])
+          u.max[2] = Math.max(posed.max[2], enabled.max[2])
+          enabled = u
         } else if (posed) {
           enabled = posed
         }
@@ -601,29 +629,25 @@
         }
       }
 
-      const cube = [
-        [minBB[0], minBB[1], minBB[2]],
-        [maxBB[0], minBB[1], minBB[2]],
-        [maxBB[0], maxBB[1], minBB[2]],
-        [minBB[0], maxBB[1], minBB[2]],
-        [minBB[0], minBB[1], maxBB[2]],
-        [maxBB[0], minBB[1], maxBB[2]],
-        [maxBB[0], maxBB[1], maxBB[2]],
-        [minBB[0], maxBB[1], maxBB[2]],
-      ]
       const modelRotate = this.gltf.modelRotate
       if (!modelRotate) return
 
-      this.xMinBB = [Infinity, Infinity, Infinity]
-      this.xMaxBB = [-Infinity, -Infinity, -Infinity]
-      const xMinBB = this.xMinBB
-      const xMaxBB = this.xMaxBB
+      // (refilled in place: built new three times a tick per model, ~20 MB/s of garbage with 50 models. Nothing else
+      // holds these arrays)
+      const xMinBB = this.xMinBB || (this.xMinBB = [0, 0, 0])
+      const xMaxBB = this.xMaxBB || (this.xMaxBB = [0, 0, 0])
+      xMinBB[0] = xMinBB[1] = xMinBB[2] = Infinity
+      xMaxBB[0] = xMaxBB[1] = xMaxBB[2] = -Infinity
       const vec3 = globalThis.glMatrix3D.vec3
 
-      const rotatedPoint = vec3.create()
-      for (let i = 0; i < cube.length; i++) {
-        const cubePoint = cube[i]
-        const point = vec3.fromValues(cubePoint[0], cubePoint[1], cubePoint[2])
+      // the box's corners in the same order as before (the first of equal values wins); point / rotatedPoint are
+      // gl-matrix vectors (float32) as vec3.fromValues / vec3.create made them
+      const rotatedPoint = _bbOut || (_bbOut = vec3.create())
+      const point = _bbPoint || (_bbPoint = vec3.create())
+      for (let i = 0; i < 8; i++) {
+        point[0] = BB_CORNER_X[i] ? maxBB[0] : minBB[0]
+        point[1] = BB_CORNER_Y[i] ? maxBB[1] : minBB[1]
+        point[2] = i >= 4 ? maxBB[2] : minBB[2]
         vec3.transformMat4(rotatedPoint, point, modelRotate)
         if (xMinBB[0] > rotatedPoint[0]) xMinBB[0] = rotatedPoint[0]
         if (xMinBB[1] > rotatedPoint[1]) xMinBB[1] = rotatedPoint[1]
@@ -814,25 +838,19 @@
     // World matrix of a node composed from its TRS chain (never node.matrix, which is
     // stale on the main thread in worker mode), premultiplied by a fresh modelRotate
     _getNodeWorldTransform(nodeName) {
-      if (!this._refreshModelRotate() || !this._ensureNodeMaps()) return null
-      // Worker mode samples the main-thread pose lazily; bring it up to date.
-      if (this.gltf && typeof this.gltf.ensureMainThreadPose === "function") this.gltf.ensureMainThreadPose()
-      const node = this._nodeByName.get(nodeName)
-      if (!node) return null
       const mat4 = globalThis.glMatrix3D.mat4
-      const path = []
-      let current = node
-      while (current) {
-        path.unshift(current)
-        current = this._nodeParent.get(current)
+      let world = null
+      // a drawn node (setDrawnNodes): the pose as drawn (the worker's last), under the model's current placement;
+      // no main-thread pose needed
+      if (this._drawnNodes && this._drawnNodes.includes(nodeName) && this.gltf && this.gltf.drawnNodeMatrix && this._refreshModelRotate()) {
+        const local = _drawnTmp || (_drawnTmp = mat4.create())
+        if (this.gltf.drawnNodeMatrix(nodeName, local)) world = mat4.multiply(mat4.create(), this.gltf.modelRotate, local)
       }
-      const world = mat4.create()
-      const local = mat4.create()
-      for (const n of path) {
-        mat4.fromRotationTranslationScale(local, n.rotation || [0, 0, 0, 1], n.translation || [0, 0, 0], n.scale || [1, 1, 1])
-        mat4.multiply(world, world, local)
+      if (!world) {
+        const w = this._nodeWorld(nodeName)
+        if (!w) return null
+        world = mat4.clone(w) // (the caller keeps it: w is scratch)
       }
-      mat4.multiply(world, this.gltf.modelRotate, world)
       const quat = globalThis.glMatrix3D.quat
       const rotation = quat.create()
       const scale = [0, 0, 0]
@@ -849,8 +867,66 @@
     }
 
     _getNodeWorldPosition(nodeName) {
-      const t = this._getNodeWorldTransform(nodeName)
-      return t ? t.position : null
+      const w = this._nodeWorld(nodeName)
+      return w ? [w[12], w[13], w[14]] : null
+    }
+
+    // The node's world matrix (modelRotate x its TRS chain from the root) in a scratch matrix, valid until the next
+    // call; null before the model loads or for an unknown node.
+    _nodeWorld(nodeName) {
+      if (!this._refreshModelRotate() || !this._ensureNodeMaps()) return null
+      // a bone outside the main-thread set (setMainThreadNodes): from now on it is sampled there too (this read still
+      // sees it as it was)
+      if (this._mainNodes && this.gltf && this.gltf.mainNodeCovered && !this.gltf.mainNodeCovered(nodeName)) {
+        if (!this._mainNodesWarned) {
+          this._mainNodesWarned = true
+          console.warn(`[3DObject] "${nodeName}" read outside the main-thread bones (setMainThreadNodes): added`)
+        }
+        this._mainNodes.add(String(nodeName))
+        this._mainNodesVersion = (this._mainNodesVersion || 0) + 1
+      }
+      // Worker mode samples the main-thread pose lazily; bring it up to date.
+      const g = this.gltf
+      if (g && typeof g.ensureMainThreadPose === "function") g.ensureMainThreadPose()
+      const node = this._nodeByName.get(nodeName)
+      if (!node) return null
+      const mat4 = globalThis.glMatrix3D.mat4
+      const out = _nodeWorldTmp || (_nodeWorldTmp = mat4.create())
+      if (g && g._poseVersion !== undefined) {
+        // worker mode: the chain matrices are cached per node for the main-thread pose they were built from
+        mat4.multiply(out, g.modelRotate, this._chainMatrix(node, g._poseVersion))
+        return out
+      }
+      // (the same product, built from the root every call: node TRS another way, e.g. CPU animation)
+      const path = []
+      let current = node
+      while (current) {
+        path.unshift(current)
+        current = this._nodeParent.get(current)
+      }
+      const local = _nodeLocalTmp || (_nodeLocalTmp = mat4.create())
+      mat4.identity(out)
+      for (const n of path) {
+        mat4.fromRotationTranslationScale(local, n.rotation || Q_IDENTITY, n.translation || V_ZERO, n.scale || V_ONE)
+        mat4.multiply(out, out, local)
+      }
+      mat4.multiply(out, g.modelRotate, out)
+      return out
+    }
+
+    // identity x root local x ... x node local, exactly as the loop above builds it, kept per node until the pose
+    // changes (ensureMainThreadPose bumps _poseVersion): bones share their ancestors, and bodyIK reads ~12 a tick
+    _chainMatrix(node, version) {
+      if (node._chainV === version) return node._chainM
+      const mat4 = globalThis.glMatrix3D.mat4
+      const parent = this._nodeParent.get(node)
+      const pm = parent ? this._chainMatrix(parent, version) : _mIdentity || (_mIdentity = mat4.create())
+      const local = _nodeLocalTmp || (_nodeLocalTmp = mat4.create())
+      mat4.fromRotationTranslationScale(local, node.rotation || Q_IDENTITY, node.translation || V_ZERO, node.scale || V_ONE)
+      const m = node._chainM || (node._chainM = mat4.create())
+      mat4.multiply(m, pm, local)
+      node._chainV = version
+      return m
     }
 
     // Zero-copy access to the shared bind-pose geometry. positions/indices are the
@@ -1283,6 +1359,111 @@
       this.animationBlend = time
     }
 
+    // ---- Bone rotation offsets: an extra local rotation per node, applied on top of whatever clip plays
+    // (rot = sampled * offset, i.e. about the bone's own axes). Works in worker and main-thread animation.
+    _setBoneRotationOffsetQuat(name, x, y, z, w) {
+      const l = Math.hypot(x, y, z, w) || 1
+      this._boneOffsets.set(String(name), [x / l, y / l, z / l, w / l])
+      this._boneOffsetsChanged()
+    }
+
+    _setBoneRotationOffset(name, xDeg, yDeg, zDeg) {
+      // @ts-ignore
+      const quat = globalThis.glMatrix3D.quat
+      const q = quat.create()
+      quat.fromEuler(q, xDeg, yDeg, zDeg)
+      this._setBoneRotationOffsetQuat(name, q[0], q[1], q[2], q[3])
+    }
+
+    _clearBoneRotationOffset(name) {
+      if (this._boneOffsets.delete(String(name))) this._boneOffsetsChanged()
+    }
+
+    _clearBoneRotationOffsets() {
+      if (this._boneOffsets.size === 0) return
+      this._boneOffsets.clear()
+      this._boneOffsetsChanged()
+    }
+
+    _setAnimationBlendWeight(name, weight) {
+      name = String(name)
+      if (!(weight > 0) || !Number.isFinite(weight)) {
+        if (!this._blendWeights.delete(name)) return
+      } else {
+        if (this._blendWeights.get(name) === weight) return
+        this._blendWeights.set(name, weight)
+      }
+      this._blendWeightsChanged()
+    }
+
+    // weights: { name: weight } or [[name, weight], ...]; replaces every weight
+    _setIKChain(name, c) {
+      const vec = (v) => (Array.isArray(v) || ArrayBuffer.isView(v)) && v.length >= 3 ? [+v[0], +v[1], +v[2]] : null
+      const target = vec(c.target)
+      if (!c.upper || !c.lower || !c.end || !target) throw new Error("setIKChain: upper, lower, end and target [x, y, z] are required")
+      // a non-finite input (NaN from a bad velocity...) would solve a wild pose: keep the last good chain
+      const bad = (v) => v && !(Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]))
+      if (bad(target) || bad(vec(c.pole)) || bad(vec(c.endDir)) || bad(vec(c.endDir2)) || bad(vec(c.anchor)) || bad(vec(c.poleAnchor)) || !Number.isFinite(c.weight == null ? 1 : +c.weight)) return
+      this._ikChains.set(String(name), {
+        upper: String(c.upper), lower: String(c.lower), end: String(c.end), target, pole: vec(c.pole),
+        weight: c.weight == null ? 1 : Math.max(0, Math.min(1, +c.weight)),
+        endAxis: vec(c.endAxis), endDir: vec(c.endDir), endWeight: c.endWeight == null ? 1 : Math.max(0, Math.min(1, +c.endWeight)),
+        endAxis2: vec(c.endAxis2), endDir2: vec(c.endDir2), hingeAxis: vec(c.hingeAxis),
+        anchor: vec(c.anchor), poleAnchor: vec(c.poleAnchor),
+        followH: c.follow ? Math.max(0, Math.min(1, +c.follow[0] || 0)) : 0,
+        followV: c.follow ? Math.max(0, Math.min(1, +c.follow[1] || 0)) : 0,
+      })
+      if (this.gltf && this.gltf.onIKChanged) this.gltf.onIKChanged()
+    }
+
+    _clearIKChain(name) {
+      if (!this._ikChains.delete(String(name))) return
+      if (this.gltf && this.gltf.onIKChanged) this.gltf.onIKChanged()
+    }
+
+    _clearIKChains() {
+      if (this._ikChains.size === 0) return
+      this._ikChains.clear()
+      if (this.gltf && this.gltf.onIKChanged) this.gltf.onIKChanged()
+    }
+
+    _setAnimationBlendWeights(weights) {
+      this._blendWeights.clear()
+      const entries = Array.isArray(weights) ? weights : Object.entries(weights || {})
+      for (const [name, w] of entries) if (w > 0 && Number.isFinite(w)) this._blendWeights.set(String(name), w)
+      this._blendWeightsChanged()
+    }
+
+    _setAnimationBlendPhase(name, phase) {
+      name = String(name)
+      if (phase == null || !Number.isFinite(+phase)) {
+        if (!this._blendPhases.delete(name)) return
+      } else {
+        const p = Math.max(0, Math.min(1, +phase))
+        if (this._blendPhases.get(name) === p) return
+        this._blendPhases.set(name, p)
+      }
+      this._blendWeightsChanged()
+    }
+
+    _clearAnimationBlendWeights() {
+      if (this._blendWeights.size === 0) return
+      this._blendWeights.clear()
+      this._blendWeightsChanged()
+    }
+
+    _blendWeightsChanged() {
+      this._blendWeightsVersion++
+      if (this.gltf && this.gltf.onBlendWeightsChanged) this.gltf.onBlendWeightsChanged()
+      this.runtime.UpdateRender()
+    }
+
+    _boneOffsetsChanged() {
+      this._boneOffsetsVersion++
+      if (this.gltf && this.gltf.onBoneOffsetsChanged) this.gltf.onBoneOffsetsChanged()
+      this.runtime.UpdateRender()
+    }
+
     GetScriptInterfaceClass() {
       // @ts-ignore
       return self.I3DObjectInstance
@@ -1400,11 +1581,162 @@
       return map.get(this).scale
     }
 
+    // Extra local rotation on a bone on top of the playing animation (degrees, about the bone's own axes).
+    setBoneRotationOffset(boneName, xDeg, yDeg, zDeg) {
+      map.get(this)._setBoneRotationOffset(boneName, xDeg, yDeg, zDeg)
+    }
+    // Same as a quaternion [x, y, z, w] in the bone's local space.
+    setBoneRotationOffsetQuat(boneName, x, y, z, w) {
+      map.get(this)._setBoneRotationOffsetQuat(boneName, x, y, z, w)
+    }
+    clearBoneRotationOffset(boneName) {
+      map.get(this)._clearBoneRotationOffset(boneName)
+    }
+    clearBoneRotationOffsets() {
+      map.get(this)._clearBoneRotationOffsets()
+    }
+
+    // Blend tree: mix several clips (same skeleton/channel layout) by weight, all at the playing animation's
+    // phase. The playing animation still sets time, speed, looping and crossfades; it only contributes if it
+    // is in the weights. { "utrs_jog_60": 0.3, "utrs_run_60": 0.7 }. Weights are normalized.
+    setAnimationBlendWeights(weights) {
+      map.get(this)._setAnimationBlendWeights(weights)
+    }
+    setAnimationBlendWeight(animationName, weight) {
+      map.get(this)._setAnimationBlendWeight(animationName, weight)
+    }
+    clearAnimationBlendWeights() {
+      map.get(this)._clearAnimationBlendWeights()
+    }
+    // A weighted clip sampled at its own phase (0..1 of its length) instead of the playing clip's (a pose that
+    // plays on its own clock: a vault fading out over the next clip). null: back to the playing clip's phase.
+    setAnimationBlendPhase(animationName, phase) {
+      map.get(this)._setAnimationBlendPhase(animationName, phase)
+    }
+    clearAnimationBlendPhase(animationName) {
+      map.get(this)._setAnimationBlendPhase(animationName, null)
+    }
+    get animationBlendWeights() {
+      return Object.fromEntries(map.get(this)._blendWeights)
+    }
+
     set animationBlend(time) {
       map.get(this)._setAnimationBlend(time)
     }
     get animationBlend() {
       return map.get(this).animationBlend
+    }
+
+    // Playback speed multiplier, same as the "Set animation speed" action
+    set animationSpeed(speed) {
+      map.get(this).animationSpeed = speed
+    }
+    get animationSpeed() {
+      return map.get(this).animationSpeed
+    }
+    // Name of the clip the last "Play animation" started ("" before any)
+    get animationName() {
+      return map.get(this).animationName
+    }
+
+    // The bones this instance's main-thread pose keeps up to date (with their parents): the ones scripts read
+    // (getBoneWorldPosition, getNodeWorldTransform, IK chain info, trails). The worker still animates every bone for
+    // drawing; the main thread then samples only these channels. null: all (the default). Reading another bone adds
+    // it (a warning in the console: that first read sees it as it was).
+    setMainThreadNodes(names) {
+      const inst = map.get(this)
+      inst._mainNodes = names == null ? null : new Set(Array.from(names, String))
+      inst._mainNodesVersion = (inst._mainNodesVersion || 0) + 1
+    }
+
+    // On demand (>= 3.0.64): the main-thread pose is only sampled when a bone is read (or updateMainThreadPose),
+    // even while crossfading (it otherwise samples every tick then). For a model read only now and then
+    updateMainThreadPose() {
+      const g = map.get(this).gltf
+      if (g && typeof g.ensureMainThreadPose === "function") g.ensureMainThreadPose()
+    }
+    setMainThreadPoseOnDemand(on) {
+      map.get(this)._mainPoseOnDemand = !!on
+    }
+
+    // Drawn nodes (>= 3.0.64, up to 6): getNodeWorldTransform answers for these with the pose as drawn (the worker's
+    // last pose, which is what is on screen, under the model's current placement) and never samples the main-thread
+    // pose. The other reads (getBoneWorldPosition, getNodeWorldPosition, IK chain info) stay on the main-thread pose.
+    // null: none. Trails following a bone read it through getNodeWorldTransform.
+    setDrawnNodes(names) {
+      const inst = map.get(this)
+      inst._drawnNodes = names == null ? null : Array.from(names, String).slice(0, 6)
+      inst._drawnNodesVersion = (inst._drawnNodesVersion || 0) + 1
+    }
+
+    // Two-bone IK (worker animation), solved after the animation, blend weights and bone offsets.
+    // chain: { upper, lower, end: bone names (thigh, shin, ankle / upper arm, forearm, hand),
+    //          target: [x, y, z] world position for the end (layout px, z = elevation),
+    //          pole?: [x, y, z] world point the knee/elbow bends toward (default: where the animation bends it),
+    //          weight?: 0..1, endAxis?: [x, y, z] a bone-local axis of the end bone, endDir?: [x, y, z] world
+    //          direction to turn it onto (sole onto the ground normal, palm onto a wall), endWeight?: 0..1,
+    //          endAxis2?, endDir2?: a second end axis and the direction it twists toward about the first (fingers up),
+    //          hingeAxis?: [x, y, z] the lower bone's local axis the middle joint bends about (elbow, knee): the solve
+    //          keeps the joint a hinge (else the animated hinge is swung along and may end up turned sideways),
+    //          (>= 3.0.64, for a chain set less often than every frame) anchor?: [x, y, z] the end's animated world
+    //          position the target was worked out from, follow?: [horizontal, vertical] 0..1: how much of the
+    //          animated end's move since then the target takes every frame (1, 1: a target relative to the animated
+    //          foot; 0, 1: a foot held in place whose height follows the animation), poleAnchor?: [x, y, z] the upper
+    //          joint's animated world position when the pole was worked out (the pole keeps its offset from it) }
+    setIKChain(name, chain) {
+      map.get(this)._setIKChain(name, chain || {})
+    }
+    clearIKChain(name) {
+      map.get(this)._clearIKChain(name)
+    }
+    clearIKChains() {
+      map.get(this)._clearIKChains()
+    }
+    // Same as the "Play animation" action
+    playAnimation(name, loop = true) {
+      // @ts-ignore
+      self.C3.Plugins.Mikal_3DObject.Acts.PlayAnimation.call(map.get(this), String(name), !!loop)
+    }
+    get isLoaded() {
+      return !!map.get(this).loaded
+    }
+
+    // Show or hide a mesh node (same as the "Enable node" action), e.g. to pick a skin
+    setNodeEnabled(nodeName, enabled) {
+      // @ts-ignore
+      self.C3.Plugins.Mikal_3DObject.Acts.EnableNode.call(map.get(this), String(nodeName), !!enabled)
+    }
+
+    // A simple jiggle on a bone (worker animation): its tip springs toward where the animation puts it, swung by
+    // the model's moves and turns. params: stiffness (1/s^2, default 150), damping (1/s, 10: against the tip's speed
+    // relative to its animated position), drag (1/s, 0: against its speed in the world, like air), maxAngle (deg, 30),
+    // length (model units from the bone to the tip, 20), axis ([x, y, z] bone-local: the way the part it moves points
+    // from the bone, default [0, 1, 0]), gravity (px/s^2 pulling the tip down, 0 = none), anchor (node name: the rest direction keeps a fixed rotation to that node instead of following the parent, e.g.
+    // a sword on the thigh hanging from the hips), anchorPose ([x, y, z, w]: that rotation, the bone's model-space
+    // rotation relative to the anchor's; default: the bind pose's), anchorTilt ([x, y, z] deg about the bone's own
+    // axes, on top), anchorWeight (0..1, 1), limitAxis ([x, y, z] in the parent's space, toward the body: the tip
+    // goes at most limitAngle deg that way from its rest direction without the animation; 0 = never closer to the
+    // body than the bind / anchored pose, < 0 = held off it). No collisions: purely visual.
+    setJiggleBone(name, params) {
+      const p = params || {}, num = (v, d) => (v !== null && v !== undefined && Number.isFinite(+v) ? +v : d)
+      const vec = (v, n) => (Array.isArray(v) && v.length === n && v.every((x) => Number.isFinite(+x)) ? v.map(Number) : null)
+      map.get(this)._jiggle.set(String(name), { stiffness: Math.max(0, num(p.stiffness, 150)), damping: Math.max(0, num(p.damping, 10)),
+        maxAngle: Math.max(0, num(p.maxAngle, 30)), length: Math.max(0.001, num(p.length, 20)),
+        gravity: Math.max(0, num(p.gravity, 0)), axis: vec(p.axis, 3),
+        anchor: p.anchor ? String(p.anchor) : "", anchorWeight: Math.min(1, Math.max(0, num(p.anchorWeight, 1))),
+        anchorPose: vec(p.anchorPose, 4), anchorTilt: vec(p.anchorTilt, 3),
+        limitAxis: vec(p.limitAxis, 3), limitAngle: num(p.limitAngle, 0), drag: Math.max(0, num(p.drag, 0)) })
+    }
+    clearJiggleBone(name) {
+      map.get(this)._jiggle.delete(String(name))
+    }
+    clearJiggleBones() {
+      map.get(this)._jiggle.clear()
+    }
+    // { animatedEnd: [x, y, z] where the animation alone puts the end, reach: target distance / full reach }
+    getIKChainInfo(name) {
+      const inst = map.get(this)
+      return inst.gltf && inst.gltf.ikChainInfo ? inst.gltf.ikChainInfo(String(name)) : null
     }
   }
 }

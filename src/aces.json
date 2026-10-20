@@ -318,6 +318,62 @@
 					}
 				],
 				"isDeprecated": true
+			},
+			{
+				"id": "set-bone-rotation-offset",
+				"scriptName": "SetBoneRotationOffset",
+				"highlight": false,
+				"params": [
+					{
+						"id": "bone-name",
+						"type": "string",
+						"initialValue": ""
+					},
+					{
+						"id": "x",
+						"type": "number",
+						"initialValue": "0"
+					},
+					{
+						"id": "y",
+						"type": "number",
+						"initialValue": "0"
+					},
+					{
+						"id": "z",
+						"type": "number",
+						"initialValue": "0"
+					}
+				]
+			},
+			{
+				"id": "clear-bone-rotation-offsets",
+				"scriptName": "ClearBoneRotationOffsets",
+				"highlight": false,
+				"params": []
+			},
+			{
+				"id": "set-animation-blend-weight",
+				"scriptName": "SetAnimationBlendWeight",
+				"highlight": false,
+				"params": [
+					{
+						"id": "animation-name",
+						"type": "string",
+						"initialValue": ""
+					},
+					{
+						"id": "weight",
+						"type": "number",
+						"initialValue": "1"
+					}
+				]
+			},
+			{
+				"id": "clear-animation-blend-weights",
+				"scriptName": "ClearAnimationBlendWeights",
+				"highlight": false,
+				"params": []
 			}
 		],
 		"expressions": [

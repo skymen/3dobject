@@ -998,3 +998,255 @@ ObjectBufferTop.resetStats = function () {
 if (!globalThis.ObjectBuffer) {
   globalThis.ObjectBuffer = ObjectBufferTop
 }
+
+/**
+ * Instanced skinned shadow casters (globalThis.Mikal3DObjectSkinInstancing).
+ *
+ * A host's shadow pass draws every character into every cascade it falls in,
+ * and one trip through Draw / render / a batch job per character per cascade
+ * was most of the shadow CPU. Here:
+ *  - begin(renderer, entries), once per frame before the pass: for each worker
+ *    model whose drawn meshes are all skinned, every skin group's model matrix
+ *    (instance transform x root node) and joint matrices go into 16 KB chunks
+ *    of one uniform buffer (256 matrices, the size every WebGL2 context takes),
+ *    uploaded once into a ring of three (never rewritten while the GPU may
+ *    still read it: tile-based drivers stall on that);
+ *  - queue(sdk) in a cascade takes such a model instead of drawing it;
+ *  - flush(renderer) draws each mesh primitive once per chunk for all the
+ *    queued models sharing it (skinned buffers are shared by every instance of
+ *    an asset) and a texture, with drawElementsInstanced; the vertex shader
+ *    finds an instance's block at uSkinInst[uSkinInstBase[gl_InstanceID]]
+ *    (plugin.js).
+ * Depth only: no tint, no normals. The host sets the caster state and program
+ * uniforms (its lighting scope) before flush, as it does around Draw.
+ *
+ * Binding point 2 (Bones uses 0, the UTRS lighting frame block 1). A program
+ * that never drew instanced keeps its block on binding 0, whose dummy bones
+ * buffer is the same 16 KB; once one has, the last chunk range stays bound.
+ */
+const SkinInstancing = {
+  CHUNK: 256, // matrices per chunk: 16 KB
+  BINDING: 2,
+  MAX_PER_DRAW: 64, // uSkinInstBase length in the shader
+  RING: 3,
+  ring: [], // { buffer, chunks }
+  buffer: null, // this frame's
+  gl: null,
+  lost: false,
+  data: null,
+  frame: -1,
+  slots: new Map(), // BoneBuffer -> matrix index (chunk * CHUNK + base) this frame
+  ready: new Set(), // models packed this frame
+  queued: [],
+  bound: new WeakSet(), // programs whose SkinInst block is on BINDING
+  m: null,
+  q: null,
+  pos: [0, 0, 0],
+  scl: [0, 0, 0],
+  white: [1, 1, 1, 1],
+
+  /** Whether this model can draw through the instanced path (all drawn meshes skinned, bones posed). */
+  eligible(sdk) {
+    const g = sdk.gltf
+    if (!sdk.loaded || sdk.isEditor || !g || !g.drawMeshes || g.drawMeshesIndex === undefined || !g.modelRotate) return false
+    if (typeof g._ensurePoseBuffers !== "function") return false // worker models only
+    let any = false
+    for (let j = 0; j <= g.drawMeshesIndex; j++) {
+      const dm = g.drawMeshes[j]
+      if (!dm || dm.disabled) continue
+      const bb = dm.node && dm.node.boneBuffer
+      if (!bb || !bb.skinAnimation || !bb.bones || !bb.bonesLoaded || !bb.rootNodeXform) return false
+      if (1 + (bb.bones.length >> 4) > this.CHUNK) return false
+      const obs = dm.objectBuffers
+      if (!obs || !obs.length) return false
+      for (let i = 0; i < obs.length; i++) if (!obs[i].isSkinned || !obs[i]._shared) return false
+      if (this._texture(sdk, dm) === undefined) return false
+      any = true
+    }
+    return any
+  },
+
+  _texture(sdk, dm) {
+    const material = dm.material
+    const textured = material && material.pbrMetallicRoughness && "baseColorTexture" in material.pbrMetallicRoughness
+    return textured ? sdk.sdkType.texture[material.name] : sdk.sdkType.whiteTexture
+  },
+
+  /** Pack this frame's skinned models (entries: { sdk } objects or sdk instances) and upload them. */
+  begin(renderer, entries) {
+    const gl = renderer._gl
+    this.frame = renderer.GetFrameNumber ? renderer.GetFrameNumber() : this.frame + 1
+    this.slots.clear()
+    this.ready.clear()
+    this.queued.length = 0
+    if (!gl || renderer.IsContextLost()) return 0
+    const m3 = globalThis.glMatrix3D
+    if (!this.m) {
+      this.m = m3.mat4.create()
+      this.q = m3.quat.create()
+    }
+    const CHUNK = this.CHUNK
+    let chunk = 0, used = 0
+    for (const e of entries) {
+      const sdk = e.sdk || e
+      if (!this.eligible(sdk)) continue
+      const g = sdk.gltf
+      for (let j = 0; j <= g.drawMeshesIndex; j++) {
+        const dm = g.drawMeshes[j]
+        if (!dm || dm.disabled) continue
+        const bb = dm.node.boneBuffer
+        if (this.slots.has(bb)) continue
+        const size = 1 + (bb.bones.length >> 4)
+        if (used + size > CHUNK) {
+          chunk++
+          used = 0
+        }
+        this.slots.set(bb, chunk * CHUNK + used)
+        used += size
+      }
+      this.ready.add(sdk)
+    }
+    if (!this.ready.size) return 0
+    const chunks = chunk + 1
+    const floats = chunks * CHUNK * 16
+    if (!this.data || this.data.length < floats) this.data = new Float32Array(floats * 2)
+    const data = this.data
+    for (const sdk of this.ready) {
+      // The model matrix as GltfModelW.render builds it.
+      const inst = sdk, wi = inst.GetWorldInfo(), M = this.m
+      m3.quat.fromEuler(this.q, inst.xAngle, inst.yAngle, inst.zAngle)
+      this.pos[0] = wi.GetX()
+      this.pos[1] = wi.GetY()
+      this.pos[2] = wi.GetTotalZElevation()
+      this.scl[0] = inst.scale / (inst.xScale == 0 ? 1 : inst.xScale)
+      this.scl[1] = -(inst.scale / (inst.yScale == 0 ? 1 : inst.yScale))
+      this.scl[2] = inst.scale / (inst.zScale == 0 ? 1 : inst.zScale)
+      m3.mat4.fromRotationTranslationScale(M, this.q, this.pos, this.scl)
+      const g = sdk.gltf
+      for (let j = 0; j <= g.drawMeshesIndex; j++) {
+        const dm = g.drawMeshes[j]
+        if (!dm || dm.disabled) continue
+        const bb = dm.node.boneBuffer
+        const o = this.slots.get(bb) * 16
+        // model x root node, the product the skinning path applies after the joints
+        m3.mat4.multiply(data.subarray(o, o + 16), M, bb.rootNodeXform)
+        data.set(bb.bones, o + 16)
+      }
+    }
+    // One upload, before any draw of the frame reads the buffer.
+    if (this.gl !== gl || this.lost) {
+      if (this.gl !== gl) gl.canvas.addEventListener?.("webglcontextlost", () => { SkinInstancing.lost = true })
+      this.gl = gl
+      this.lost = false
+      this.ring = [] // a lost context's buffers are gone with it
+      this.bound = new WeakSet()
+    }
+    const slot = this.frame % this.RING
+    let b = this.ring[slot]
+    if (!b) b = this.ring[slot] = { buffer: gl.createBuffer(), chunks: 0 }
+    gl.bindBuffer(gl.UNIFORM_BUFFER, b.buffer)
+    if (b.chunks < chunks) {
+      b.chunks = chunks * 2
+      gl.bufferData(gl.UNIFORM_BUFFER, b.chunks * CHUNK * 64, gl.DYNAMIC_DRAW)
+    }
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, data, 0, floats)
+    gl.bindBuffer(gl.UNIFORM_BUFFER, null)
+    this.buffer = b.buffer
+    return this.ready.size
+  },
+
+  /** Take a model packed this frame; false means the host draws it as usual. */
+  queue(renderer, sdk) {
+    if (!this.ready.has(sdk) || (renderer.GetFrameNumber && renderer.GetFrameNumber() !== this.frame)) return false
+    this.queued.push(sdk)
+    return true
+  },
+
+  /** Draw the queued models: one instanced draw per mesh primitive, texture and chunk. */
+  flush(renderer) {
+    const queued = this.queued
+    if (!queued.length) return
+    const DeferredBatch = globalThis.DeferredBatch
+    const shader = globalThis.cached3DObjectShader
+    if (!shader || !DeferredBatch || !DeferredBatch.isEnabled()) {
+      queued.length = 0
+      return
+    }
+    // ObjectBuffer -> texture -> chunk -> bases
+    const groups = new Map()
+    const CHUNK = this.CHUNK
+    for (const sdk of queued) {
+      const g = sdk.gltf
+      for (let j = 0; j <= g.drawMeshesIndex; j++) {
+        const dm = g.drawMeshes[j]
+        if (!dm || dm.disabled) continue
+        const at = this.slots.get(dm.node.boneBuffer)
+        const chunk = (at / CHUNK) | 0
+        const tex = this._texture(sdk, dm)
+        for (const ob of dm.objectBuffers) {
+          let byTex = groups.get(ob)
+          if (!byTex) groups.set(ob, (byTex = new Map()))
+          let byChunk = byTex.get(tex)
+          if (!byChunk) byTex.set(tex, (byChunk = new Map()))
+          let list = byChunk.get(chunk)
+          if (!list) byChunk.set(chunk, (list = []))
+          list.push(at - chunk * CHUNK)
+        }
+      }
+    }
+    queued.length = 0
+    let original = null
+    if (renderer.GetProgram() !== shader) {
+      original = renderer.GetProgram()
+      renderer.SetProgram(shader)
+    }
+    try {
+      for (const [ob, byTex] of groups) {
+        for (const [tex, byChunk] of byTex) {
+          renderer.SetTexture(tex)
+          for (const [chunk, list] of byChunk) {
+            for (let s = 0; s < list.length; s += this.MAX_PER_DRAW) {
+              const n = Math.min(this.MAX_PER_DRAW, list.length - s)
+              DeferredBatch.push(renderer, skinInstancedDraw, ob, renderer, Float32Array.from(list.slice(s, s + n)), n, chunk)
+            }
+          }
+        }
+      }
+    } finally {
+      if (original) renderer.SetProgram(original)
+    }
+  },
+}
+
+// A batch job: `this` is the shared ObjectBuffer of one mesh primitive.
+function skinInstancedDraw(renderer, bases, count, chunk) {
+  const gl = renderer._gl
+  const program = renderer._batchState.currentShader._shaderProgram
+  const uc = globalThis.uniformCache
+  const SI = SkinInstancing
+  if (this.vao === null) this.vao = this.createVao(renderer)
+  if (!SI.bound.has(program)) {
+    const index = uc.getUniformBlockIndex(gl, program, "SkinInst")
+    if (index !== gl.INVALID_INDEX && index !== -1) gl.uniformBlockBinding(program, index, SI.BINDING)
+    SI.bound.add(program)
+  }
+  gl.bindBufferRange(gl.UNIFORM_BUFFER, SI.BINDING, SI.buffer, chunk * SI.CHUNK * 64, SI.CHUNK * 64)
+  uc.setFloat(gl, program, "uInstancedEnable", 0.0)
+  uc.setFloat(gl, program, "uSkinEnable", 0.0)
+  uc.setFloat(gl, program, "uNodeXformEnable", 0.0)
+  uc.setFloat(gl, program, "uSkinInstEnable", 1.0)
+  this._setColorUniforms(gl, SI.white, program)
+  this._uploadMorphUniforms(renderer, null)
+  gl.uniform1fv(uc.getLocation(gl, program, "uSkinInstBase"), bases)
+  // The Bones block is declared, so it must be backed even though this branch never reads it.
+  const BoneBuffer = globalThis.BoneBuffer
+  const dummy = BoneBuffer && BoneBuffer._getOrCreateDummyUBO(gl)
+  if (dummy) gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBuffer.BONE_UBO_BINDING_POINT, dummy)
+  gl.bindVertexArray(this.vao)
+  gl.drawElementsInstanced(gl.TRIANGLES, this.indexDataLength, gl.UNSIGNED_SHORT, 0, count)
+  gl.bindVertexArray(null)
+  uc.setFloat(gl, program, "uSkinInstEnable", 0.0)
+}
+
+// @ts-ignore
+globalThis.Mikal3DObjectSkinInstancing = SkinInstancing

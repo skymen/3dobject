@@ -10,6 +10,11 @@ class BoneBufferTop {
   // shared UBO -> BoneBuffer whose bones it currently holds
   static _lastUploaded = new WeakMap();
   static _DUMMY_UBO_SIZE = MAX_BONES * 16 * 4; // Size for MAX_BONES matrices * 16 floats/matrix * 4 bytes/float
+  // Per-frame bone UBO pool (gl -> { ubos, next, frame }). Each skinned instance takes one UBO at its first
+  // draw of a frame and uploads its bones into it once; the pool starts over every frame. Sized by the
+  // instances drawn in one frame, never by the instances that exist, and capped: 128 x 16 KB = 2 MB.
+  static _pools = new WeakMap();
+  static POOL_MAX = 128;
 
   // Static method to get or create the dummy UBO
   static _getOrCreateDummyUBO(gl) {
@@ -45,6 +50,11 @@ class BoneBufferTop {
           console.log("Deleting dummy Bone UBO");
           gl.deleteBuffer(BoneBufferTop.dummyUBO);
           BoneBufferTop.dummyUBO = null;
+      }
+      const pool = BoneBufferTop._pools.get(gl);
+      if (pool) {
+          for (const ubo of pool.ubos) gl.deleteBuffer(ubo);
+          BoneBufferTop._pools.delete(gl);
       }
   }
 
@@ -94,6 +104,8 @@ class BoneBufferTop {
       this.gl.deleteBuffer(this.ubo);
     }
     this.ubo = null;
+    // A pool UBO is not owned: the pool reuses it next frame.
+    this._poolUbo = null;
 
     this.bones = null;
     this.nodeXform = null;
@@ -184,6 +196,48 @@ class BoneBufferTop {
     if (this.nodeXform) this.nodeXform.set(src.subarray(offset, offset + 16))
   }
 
+  /**
+   * This instance's pool UBO for the current frame, taking the next free one
+   * at its first draw of the frame (`_poolFresh`: it holds another instance's
+   * bones, upload before use). Null when the pool is full or the renderer has
+   * no frame counter; the caller then falls back to the shared model UBO.
+   * The frame number is only a hint: if it ever failed to advance, a UBO would
+   * be rewritten after a draw used it, which GL still orders correctly.
+   */
+  _takePoolUbo(gl) {
+    const renderer = this.rendererForShaderAccess;
+    if (!renderer || typeof renderer.GetFrameNumber !== "function") return null;
+    const frame = renderer.GetFrameNumber();
+    if (this._poolFrame === frame && this._poolUbo) return this._poolUbo;
+
+    let pool = BoneBufferTop._pools.get(gl);
+    if (!pool) {
+      pool = { ubos: [], next: 0, frame: -1 };
+      BoneBufferTop._pools.set(gl, pool);
+    }
+    if (pool.frame !== frame) {
+      pool.frame = frame;
+      pool.next = 0;
+    }
+    if (pool.next >= BoneBufferTop.POOL_MAX) return null;
+
+    let ubo = pool.ubos[pool.next];
+    if (!ubo) {
+      ubo = gl.createBuffer();
+      gl.bindBuffer(gl.UNIFORM_BUFFER, ubo);
+      // The full block size: a bound range smaller than the shader's Bones
+      // block is an INVALID_OPERATION at draw time.
+      gl.bufferData(gl.UNIFORM_BUFFER, MAX_BONES * 16 * 4, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+      pool.ubos.push(ubo);
+    }
+    pool.next++;
+    this._poolFrame = frame;
+    this._poolUbo = ubo;
+    this._poolFresh = true;
+    return ubo;
+  }
+
   uploadUniforms(targetSharedGpuUbo) {
     const gl = this.gl;
     const shaderProgram = this.rendererForShaderAccess._batchState.currentShader._shaderProgram;
@@ -228,18 +282,42 @@ class BoneBufferTop {
             }
             gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, this.ubo);
         } else if (targetSharedGpuUbo && this.bones) {
-            // Shared model UBO. An instance's primitives draw back to back, so
-            // re-filling it before each one uploaded the same bones 20+ times
-            // per character per frame. Upload only when the buffer's last
-            // occupant is not this instance or the bones changed.
-            if (BoneBufferTop._lastUploaded.get(targetSharedGpuUbo) !== this || this.dirty) {
-                gl.bindBuffer(gl.UNIFORM_BUFFER, targetSharedGpuUbo);
-                gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones);
-                gl.bindBuffer(gl.UNIFORM_BUFFER, null);
-                BoneBufferTop._lastUploaded.set(targetSharedGpuUbo, this);
-                this.dirty = false;
+            // A pool UBO, written once per frame before any draw of the frame
+            // has used it; this instance's other primitives and passes only
+            // rebind it. Refilling one shared UBO per instance means rewriting
+            // a buffer the frame already drew from, and tile-based drivers
+            // stall on that: on a Pixel 10 (PowerVR) 25 characters ran at
+            // 6 fps that way, ~105 with a UBO per character.
+            const poolUbo = this._takePoolUbo(gl);
+            if (poolUbo) {
+                if (this._poolFresh || this.dirty) {
+                    gl.bindBuffer(gl.UNIFORM_BUFFER, poolUbo);
+                    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones);
+                    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+                    this._poolFresh = false;
+                    this.dirty = false;
+                    // Clearing `dirty` here would otherwise let a later frame
+                    // that overflows the pool trust older bones in the shared UBO.
+                    if (BoneBufferTop._lastUploaded.get(targetSharedGpuUbo) === this) {
+                        BoneBufferTop._lastUploaded.delete(targetSharedGpuUbo);
+                    }
+                }
+                gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, poolUbo);
+            } else {
+                // Pool full: the shared model UBO, uploaded only when its last
+                // occupant is another instance or the bones changed, and
+                // re-specified first so the driver hands out fresh storage
+                // instead of waiting on draws that still read the old bones.
+                if (BoneBufferTop._lastUploaded.get(targetSharedGpuUbo) !== this || this.dirty) {
+                    gl.bindBuffer(gl.UNIFORM_BUFFER, targetSharedGpuUbo);
+                    gl.bufferData(gl.UNIFORM_BUFFER, MAX_BONES * 16 * 4, gl.DYNAMIC_DRAW);
+                    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.bones);
+                    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+                    BoneBufferTop._lastUploaded.set(targetSharedGpuUbo, this);
+                    this.dirty = false;
+                }
+                gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, targetSharedGpuUbo);
             }
-            gl.bindBufferBase(gl.UNIFORM_BUFFER, BoneBufferTop.BONE_UBO_BINDING_POINT, targetSharedGpuUbo);
         } else if (!targetSharedGpuUbo) {
             console.warn("BoneBuffer (Skinned Path): Shader expects 'Bones' UBO, but no targetSharedGpuUbo provided. Binding dummy.");
             const dummyUBO = BoneBufferTop._getOrCreateDummyUBO(gl);

@@ -410,6 +410,56 @@
 								"desc": "Enable static geometry."
 							}
 						}
+					},
+					"set-bone-rotation-offset": {
+						"list-name": "Set bone rotation offset",
+						"display-text": "Set bone [i]{0}[/i] rotation offset to ([i]{1}[/i], [i]{2}[/i], [i]{3}[/i])",
+						"description": "Add an extra rotation to a bone on top of the playing animation, about the bone's own axes. Stays until changed or cleared.",
+						"params": {
+							"bone-name": {
+								"name": "Bone name",
+								"desc": "Name of the bone (node)."
+							},
+							"x": {
+								"name": "X",
+								"desc": "Rotation about the bone's X axis, in degrees."
+							},
+							"y": {
+								"name": "Y",
+								"desc": "Rotation about the bone's Y axis, in degrees."
+							},
+							"z": {
+								"name": "Z",
+								"desc": "Rotation about the bone's Z axis, in degrees."
+							}
+						}
+					},
+					"clear-bone-rotation-offsets": {
+						"list-name": "Clear bone rotation offsets",
+						"display-text": "Clear bone rotation offsets",
+						"description": "Remove every bone rotation offset.",
+						"params": {}
+					},
+					"set-animation-blend-weight": {
+						"list-name": "Set animation blend weight",
+						"display-text": "Set blend weight of [i]{0}[/i] to [i]{1}[/i]",
+						"description": "Blend trees: while any blend weight is set, the pose is the weighted mix of those animations, all sampled at the playing animation's phase. The playing animation still sets time, speed, looping and crossfades. Weight 0 removes the animation from the mix. All animations must share the same channel layout.",
+						"params": {
+							"animation-name": {
+								"name": "Animation",
+								"desc": "Name of the animation to mix in."
+							},
+							"weight": {
+								"name": "Weight",
+								"desc": "Weight (any positive number; weights are normalized). 0 removes it."
+							}
+						}
+					},
+					"clear-animation-blend-weights": {
+						"list-name": "Clear animation blend weights",
+						"display-text": "Clear animation blend weights",
+						"description": "Stop mixing: only the playing animation is used again.",
+						"params": {}
 					}
 				},
 				"expressions": {

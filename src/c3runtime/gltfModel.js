@@ -349,6 +349,9 @@ class GltfModelTop {
     // Instanced draws carry the model matrix as a vertex attribute, so none of
     // the per-instance SetModelViewMatrix / uModelRotate work below is needed.
     const instanced = this._canInstance(renderer)
+    // Shadow pass: see gltfModelW render (skips the model-view matrix, owes
+    // the cleanup to Mikal3DObjectEndShadowRun).
+    const shadow = renderer._m3dShadowPass === true && !this.inst.isEditor && this._useDeferred(renderer)
     if (!this.inst.isEditor) {
       mat4.copy(tmpModelView, renderer._matMV)
       const xAngle = this.inst.xAngle
@@ -384,8 +387,12 @@ class GltfModelTop {
       }
       if (!instanced) mat4.copy(modelRotate, this.modelRotate)
       if (!instanced) {
-        mat4.multiply(modelRotate, tmpModelView, modelRotate)
-        renderer.SetModelViewMatrix(modelRotate)
+        // A shadow pass reads the world position from uModelRotate, never
+        // the model-view matrix (see gltfModelW render).
+        if (!shadow) {
+          mat4.multiply(modelRotate, tmpModelView, modelRotate)
+          renderer.SetModelViewMatrix(modelRotate)
+        }
         this._glCall(renderer, this.setVertexShaderModelRotate, this.modelRotate)
       }
     }
@@ -496,7 +503,7 @@ class GltfModelTop {
     }
 
     // Restore modelview matrix
-    if (!this.inst.isEditor && !instanced) {
+    if (!this.inst.isEditor && !instanced && !shadow) {
       renderer.SetModelViewMatrix(tmpModelView)
     }
     this.inst.totalTriangles = totalTriangles
@@ -508,6 +515,8 @@ class GltfModelTop {
       if (instanced) {
         // The instanced group binds and unbinds its own VAO and touches no
         // shared attribute state, so there is nothing per instance to undo.
+      } else if (shadow) {
+        renderer._m3dShadowCleanup = this
       } else if (this._useDeferred(renderer)) {
         // One job for all of it. Every queued job costs a switch and a call at
         // flush time, and with hundreds of models on screen the per-instance
@@ -1282,6 +1291,108 @@ class GltfModelTop {
 
   // Updates animation at index to be at time.  Is used to play animation.
   updateAnimation(index, time, onScreen, deltaTime) {
+    this._restoreBoneOffsets()
+    this._updateAnimationSampled(index, time, onScreen, deltaTime)
+    this._applyBoneOffsets()
+  }
+
+  // ---- Bone rotation offsets (see instance._setBoneRotationOffset): rot = sampled * offset, the pre-offset
+  // rotation is put back before the next sample so it never stacks up on nodes the clip doesn't animate.
+  _restoreBoneOffsets() {
+    if (!this._offSaved || this._offSaved.size === 0) return
+    for (const [node, q] of this._offSaved) {
+      node.rotation[0] = q[0]; node.rotation[1] = q[1]; node.rotation[2] = q[2]; node.rotation[3] = q[3]
+    }
+    this._offSaved.clear()
+  }
+
+  _applyBoneOffsets() {
+    const map = this.inst._boneOffsets
+    if (!map || map.size === 0 || !this.gltfData || !this.gltfData.nodes) return
+    const saved = this._offSaved || (this._offSaved = new Map())
+    for (const [name, b] of map) {
+      const node = this.gltfData.nodes.find((n) => n.name === name)
+      if (!node || !node.rotation) continue
+      const r = node.rotation
+      const ax = r[0], ay = r[1], az = r[2], aw = r[3]
+      saved.set(node, [ax, ay, az, aw])
+      r[0] = aw * b[0] + ax * b[3] + ay * b[2] - az * b[1]
+      r[1] = aw * b[1] - ax * b[2] + ay * b[3] + az * b[0]
+      r[2] = aw * b[2] + ax * b[1] - ay * b[0] + az * b[3]
+      r[3] = aw * b[3] - ax * b[0] - ay * b[1] - az * b[2]
+    }
+  }
+
+  // ---- Blend weights (see instance._setAnimationBlendWeight): [{anim, w}] normalized, or null
+  _mixList() {
+    const map = this.inst._blendWeights
+    if (!map || map.size === 0) return null
+    if (this._mixVersion === this.inst._blendWeightsVersion) return this._mix
+    const anims = this.gltfData.animations || []
+    const list = []
+    let sum = 0
+    for (const [name, w] of map) {
+      const a = anims.find((x) => x.name === name)
+      if (a && w > 0) { list.push({ anim: a, w, ph: this.inst._blendPhases && this.inst._blendPhases.has(name) ? this.inst._blendPhases.get(name) : NaN }); sum += w }
+    }
+    for (const e of list) e.w /= sum
+    this._mix = list.length ? list : null
+    this._mixVersion = this.inst._blendWeightsVersion
+    return this._mix
+  }
+
+  _mixChannel(mix, i, target, phase) {
+    if (target.path !== "translation" && target.path !== "rotation" && target.path !== "scale") return
+    const rot = target.path === "rotation"
+    const acc = [0, 0, 0, 0]
+    let wsum = 0, ref = null
+    for (const { anim, w, ph } of mix) {
+      const ch = anim.channels[i]
+      if (!ch || ch.target.node !== target.node || ch.target.path !== target.path) continue
+      const input = ch.sampler.input, times = input.data, out = ch.sampler.output.data
+      const tk = input.min[0] + (ph === ph ? ph : phase) * (input.max[0] - input.min[0])
+      let k0 = 0
+      while (k0 < times.length - 2 && times[k0 + 1] < tk) k0++
+      const k1 = Math.min(k0 + 1, times.length - 1)
+      const span = times[k1] - times[k0]
+      const f = span > 0 ? Math.min(1, Math.max(0, (tk - times[k0]) / span)) : 0
+      const n = rot ? 4 : 3
+      const v = []
+      for (let j = 0; j < n; j++) v.push(out[k0 * n + j] + (out[k1 * n + j] - out[k0 * n + j]) * f) // nlerp for rotations
+      if (rot) {
+        if (!ref) ref = v
+        const s = (ref[0] * v[0] + ref[1] * v[1] + ref[2] * v[2] + ref[3] * v[3] < 0 ? -1 : 1) * w
+        for (let j = 0; j < 4; j++) acc[j] += v[j] * s
+      } else for (let j = 0; j < 3; j++) acc[j] += v[j] * w
+      wsum += w
+    }
+    if (!(wsum > 0)) return
+    const dst = target.node[target.path]
+    if (rot) {
+      const l = Math.hypot(acc[0], acc[1], acc[2], acc[3]) || 1
+      for (let j = 0; j < 4; j++) dst[j] = acc[j] / l
+    } else for (let j = 0; j < 3; j++) dst[j] = acc[j] / wsum
+  }
+
+  onBlendWeightsChanged() {
+    this._mixVersion = -1
+  }
+
+  // IK is solved in the worker / main-thread pose of worker animation only
+  onIKChanged() {
+    if (!GltfModelTop._ikWarned) {
+      GltfModelTop._ikWarned = true
+      console.warn("[3DObject] IK chains need \"Worker animation\" on; they are ignored on this model")
+    }
+  }
+
+  onBoneOffsetsChanged() {
+    // re-applied on the next updateAnimation; a paused model picks it up here
+    this._restoreBoneOffsets()
+    this._applyBoneOffsets()
+  }
+
+  _updateAnimationSampled(index, time, onScreen, deltaTime) {
     // @ts-ignore
     const vec3 = globalThis.glMatrix3D.vec3
     // @ts-ignore
@@ -1343,6 +1454,7 @@ class GltfModelTop {
     }
 
     this._lastTarget[this._lastTargetIndex] = []
+    const mix = this._mixList()
     for (let i = 0; i < anim.channels.length; i++) {
       let c = anim.channels[i]
       let timeValues = c.sampler.input
@@ -1424,9 +1536,13 @@ class GltfModelTop {
         }
       }
 
+      // Blend tree: replace with the weighted mix of the blend-weight clips at this clip's phase
+      if (mix) this._mixChannel(mix, i, target, (time - c.sampler.input.min[0]) / (c.sampler.input.max[0] - c.sampler.input.min[0]))
+
       // Blend to last animation if during blend
       if (this._blendState == "blend") {
-        const blend = this._blendTime == 0 ? 0 : this._blendTime / animationBlend
+        const linear = this._blendTime == 0 ? 0 : Math.min(1, this._blendTime / animationBlend)
+        const blend = linear * linear * (3 - 2 * linear) // eased in and out: no sudden start or stop of the transition
         const blendTarget = this._blendTarget[i]
         if (blendTarget != null) {
           if (target.path == "translation" && blendTarget.path == "translation")

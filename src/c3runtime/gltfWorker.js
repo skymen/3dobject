@@ -170,6 +170,12 @@ function patchAttributes(meshes) {
 // Request slot (Float64, REQ_STRIDE per instance):
 //   [0] iid  [1] animation index, -1 = pose only  [2] time  [3] deltaTime
 //   [4] animation blend  [5] loop (0/1)  [6..7] reserved
+// Optional `offs` (Float32Array): per slot, in slot order,
+//   [nOff, (nodeIndex, x, y, z, w) * nOff, nMix, (animIndex, weight, phase (NaN: the playing clip's)) * nMix]
+//   = the instance's bone rotation offsets (applyBoneOffsets) and blend weights (mixChannel)
+// Optional side buffer `offs`, per slot: [nOff, (node, x, y, z, w) * nOff, nMix, (animIndex, weight, phase (NaN: the playing clip's)) * nMix,
+// nIK, (IK_STRIDE floats) * nIK, nJig, jiggle, nRB, drawn node indices] (bone offsets, blend weights, IK chains
+// in model space, jiggle bones, the nodes whose drawn matrices go back after the bounds: setDrawnNodes).
 // Reply: `out` holds graph.floats floats per slot, laid out by buildGraph
 // (unskinned mesh node matrices, then per skin GROUP joints + root transform,
 // then posed bounds). The main thread builds the identical layout from the
@@ -208,6 +214,41 @@ function patchAttributes(meshes) {
 // new animation with channel i of the previous one.
 
 const TRS_STRIDE = 10 // t(3) r(4) s(3)
+// Exact copies of V8's Math.hypot (max-scaled, Kahan-summed: bit-identical results) that allocate nothing: the
+// builtin allocates a scratch array per call wherever it isn't inlined (it showed up as ~18 MB/s of garbage with 50
+// animated players). KEEP IN SYNC: gltfWorker.js / gltfModelW.js
+function hypot3(a, b, c) {
+  a = +a; b = +b; c = +c
+  let max = 0, nan = false
+  if (a !== a) nan = true; else { a = Math.abs(a); if (a > max) max = a }
+  if (b !== b) nan = true; else { b = Math.abs(b); if (b > max) max = b }
+  if (c !== c) nan = true; else { c = Math.abs(c); if (c > max) max = c }
+  if (max === Infinity) return Infinity
+  if (nan) return NaN
+  if (max === 0) return 0
+  let sum = 0, comp = 0, n, s, p
+  n = a / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  n = b / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  n = c / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  return Math.sqrt(sum) * max
+}
+function hypot4(a, b, c, d) {
+  a = +a; b = +b; c = +c; d = +d
+  let max = 0, nan = false
+  if (a !== a) nan = true; else { a = Math.abs(a); if (a > max) max = a }
+  if (b !== b) nan = true; else { b = Math.abs(b); if (b > max) max = b }
+  if (c !== c) nan = true; else { c = Math.abs(c); if (c > max) max = c }
+  if (d !== d) nan = true; else { d = Math.abs(d); if (d > max) max = d }
+  if (max === Infinity) return Infinity
+  if (nan) return NaN
+  if (max === 0) return 0
+  let sum = 0, comp = 0, n, s, p
+  n = a / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  n = b / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  n = c / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  n = d / max; s = n * n - comp; p = sum + s; comp = p - sum - s; sum = p
+  return Math.sqrt(sum) * max
+}
 const PATH_NONE = 0
 const PATH_TRANSLATION = 1
 const PATH_ROTATION = 2
@@ -357,13 +398,64 @@ function findKeyframe(times, t, cursor) {
   return t0
 }
 
+// ---- Blend weights (script API setAnimationBlendWeights). KEEP IN SYNC: gltfWorker.js / gltfModelW.js ----
+// Blend tree support: several clips with the SAME channel layout are sampled at the playing clip's phase
+// (normalized time) and mixed by weight, replacing the playing clip's value; the crossfade between animations
+// and the snapshot for the next crossfade then see the mixed pose. mix = { count, anims, idx, w } (w normalized).
+const MIX_TMP = new Float32Array(4)
+const MIX_ACC = new Float64Array(4)
+// Returns true when the mix wrote the channel (some clip has it), false when it left the playing clip's value.
+function mixChannel(state, mix, i, code, nodeIdx, phase, trs, o) {
+  const acc = MIX_ACC
+  acc[0] = acc[1] = acc[2] = acc[3] = 0
+  let wsum = 0, refSet = false, rx = 0, ry = 0, rz = 0, rw = 1
+  for (let k = 0; k < mix.count; k++) {
+    const a = mix.anims[k], w = mix.w[k]
+    if (!a || !(w > 0)) continue
+    const ch = a.channels[i]
+    if (!ch || !a._targetIdx || a._targetIdx[i] !== nodeIdx || a._pathCodes[i] !== code) continue
+    const input = ch.sampler.input, kMin = input.min[0], kMax = input.max[0], times = input.data
+    const out = ch.sampler.output.data
+    let k0 = 0, k1 = 0, f = 0
+    if (kMax > kMin && times.length > 1) {
+      const tk = kMin + (mix.ph && mix.ph[k] === mix.ph[k] ? mix.ph[k] : phase) * (kMax - kMin)
+      const cur = mix.cur[k] // (state.cursors' array for this clip, looked up once per sample: sampleAnimation)
+      k0 = findKeyframe(times, tk, cur[i])
+      cur[i] = k0
+      k1 = k0 + 1
+      const span = times[k1] - times[k0]
+      f = span > 0 ? (tk - times[k0]) / span : 0
+    }
+    if (code === PATH_ROTATION) {
+      slerp4(MIX_TMP, 0, out, k0 * 4, k1 * 4, f)
+      if (!refSet) { rx = MIX_TMP[0]; ry = MIX_TMP[1]; rz = MIX_TMP[2]; rw = MIX_TMP[3]; refSet = true }
+      const s = rx * MIX_TMP[0] + ry * MIX_TMP[1] + rz * MIX_TMP[2] + rw * MIX_TMP[3] < 0 ? -w : w
+      acc[0] += MIX_TMP[0] * s; acc[1] += MIX_TMP[1] * s; acc[2] += MIX_TMP[2] * s; acc[3] += MIX_TMP[3] * s
+    } else {
+      lerp3(MIX_TMP, 0, out, k0 * 3, k1 * 3, f)
+      acc[0] += MIX_TMP[0] * w; acc[1] += MIX_TMP[1] * w; acc[2] += MIX_TMP[2] * w
+    }
+    wsum += w
+  }
+  if (!(wsum > 0)) return false
+  if (code === PATH_ROTATION) {
+    const l = hypot4(acc[0], acc[1], acc[2], acc[3]) || 1
+    trs[o] = acc[0] / l; trs[o + 1] = acc[1] / l; trs[o + 2] = acc[2] / l; trs[o + 3] = acc[3] / l
+  } else {
+    trs[o] = acc[0] / wsum; trs[o + 1] = acc[1] / wsum; trs[o + 2] = acc[2] / wsum
+  }
+  return true
+}
+
 /**
  * Sample `anim` (prepared with prepareAnimation) at `time` into `trs`, with
  * the blend state machine and cross-animation blending of the original
  * implementation. Morph-target weight channels are ignored: the worker path
  * never rendered morphs.
  */
-function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, animationLoop, trs) {
+// mask (optional, main thread only): channels with mask[i] 0 are left alone (bones nothing reads there; the worker
+// samples every channel for drawing)
+function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, animationLoop, trs, mix, mask) {
   // Blend state machine
   switch (state.blendState) {
     case "init":
@@ -412,17 +504,33 @@ function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, an
     state.cursors.set(index, cursors)
   }
 
+  // the mix clips' cursor arrays (shared with the clip's own when it plays: one per animation index)
+  const mixing = !!(mix && mix.count)
+  if (mixing) {
+    const cur = mix.cur || (mix.cur = [])
+    for (let k = 0; k < mix.count; k++) {
+      const a = mix.anims[k]
+      if (!a || !(mix.w[k] > 0)) { cur[k] = null; continue }
+      let c = state.cursors.get(mix.idx[k])
+      if (!c) { c = new Int32Array(a.channels.length); state.cursors.set(mix.idx[k], c) }
+      cur[k] = c
+    }
+  }
+
   const blending = state.blendState === "blend" && state.blendSnap
   const blendSnap = blending ? state.blendSnap : null
   let blend = 0
   if (blending) {
     blend = state.blendTime == 0 ? 0 : state.blendTime / animationBlend
     if (blend > 1) blend = 1
+    // eased in and out: no sudden start or stop of the transition
+    blend = blend * blend * (3 - 2 * blend)
   }
   const snapshot = animationBlend != 0 ? state.snaps[state.lastTargetIndex] : null
   if (snapshot) snapshot.count = n
 
   for (let i = 0; i < n; i++) {
+    if (mask && !mask[i]) continue
     const code = codes[i]
     const c = channels[i]
     const input = c.sampler.input
@@ -440,21 +548,17 @@ function sampleAnimation(state, anim, index, time, deltaTime, animationBlend, an
     const t0 = findKeyframe(times, t, cursors[i])
     cursors[i] = t0
     const t1 = t0 + 1
-    const span = times[t1] - times[t0]
-    const f = span > 0 ? (t - times[t0]) / span : 0
-
-    const out = c.sampler.output.data
     const base = targetIdx[i] * TRS_STRIDE
-    let o
-    if (code === PATH_TRANSLATION) {
-      o = base
-      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
-    } else if (code === PATH_ROTATION) {
-      o = base + 3
-      slerp4(trs, o, out, t0 * 4, t1 * 4, f)
-    } else {
-      o = base + 7
-      lerp3(trs, o, out, t0 * 3, t1 * 3, f)
+    const o = code === PATH_TRANSLATION ? base : code === PATH_ROTATION ? base + 3 : base + 7
+
+    // the mix replaces the playing clip's value wherever one of its clips has the channel: the playing clip is
+    // only interpolated where it doesn't (same result, a slerp less per channel)
+    if (!(mixing && mixChannel(state, mix, i, code, targetIdx[i], (t - tMin) / (tMax - tMin), trs, o))) {
+      const span = times[t1] - times[t0]
+      const f = span > 0 ? (t - times[t0]) / span : 0
+      const out = c.sampler.output.data
+      if (code === PATH_ROTATION) slerp4(trs, o, out, t0 * 4, t1 * 4, f)
+      else lerp3(trs, o, out, t0 * 3, t1 * 3, f)
     }
 
     if (blendSnap && i < blendSnap.count && blendSnap.path[i] === code) {
@@ -490,6 +594,436 @@ function animationTimeRange(anim) {
 
 
 const REQ_STRIDE = 8
+const RB_MAX = 6 // drawn nodes per instance (setDrawnNodes): their model-space matrices go back with the pose
+
+// ---- IK (script API setIKChain). KEEP IN SYNC: gltfWorker.js / gltfModelW.js ----
+// Two-bone IK on the flat TRS array, after sampling and bone offsets: an upper, lower and end bone (thigh, shin,
+// ankle), a target for the end, a bend pole, a weight, and an optional end alignment (a bone-local axis turned
+// onto a direction: the sole onto the ground normal, the palm onto a wall). Model space throughout. Packed
+// IK_STRIDE floats per chain: upper, lower, end, target xyz, pole xyz (NaN = keep the animated bend side),
+// weight, end axis xyz (all 0 = no alignment), end direction xyz, end weight, second end axis xyz (all 0 = none),
+// its direction xyz (the end twists about the first direction toward it), hinge axis xyz (a lower-bone-local axis
+// the middle joint bends about, all 0 = none: the upper twists so the hinge lies across the solved bend),
+// then the follow fields (>= 3.0.64; a chain set less often than every frame, e.g. spread over frames): anchor xyz
+// (where the end's animated position was when the target was worked out), horizontal and vertical follow (0..1:
+// how much of the animated end's move since then the target takes, split along up), up xyz (world up, model
+// space), pole anchor xyz (the upper joint's animated position when the pole was worked out, NaN = none: the pole
+// then keeps its offset from the upper joint).
+const IK_STRIDE = 37
+const IK_TRS = 10
+const ikV = () => new Float64Array(3)
+const ikQ = () => new Float64Array([0, 0, 0, 1])
+const IK_TMP = { a2: [0, 0, 0], d2: [0, 0, 0], qt: [0, 0, 0, 1], pp: ikV(), rp: ikQ(), sp: ikV(), pa: ikV(), ra: ikQ(), sa: ikV(), pb: ikV(), rb: ikQ(), sb: ikV(),
+  pc: ikV(), rc: ikQ(), sc: ikV(), q1: ikQ(), q2: ikQ(), q3: ikQ(), qi: ikQ(), u: ikV(), v: ikV(), w: ikV(), x: ikV(), h: ikV(), n: ikV(),
+  lu: ikQ(), ll: ikQ(), le: ikQ(), su: ikQ(), sl: ikQ(), se: ikQ(), path: new Int32Array(64) }
+function ikQuatMul(out, a, b) {
+  const ax = a[0], ay = a[1], az = a[2], aw = a[3], bx = b[0], by = b[1], bz = b[2], bw = b[3]
+  out[0] = aw * bx + ax * bw + ay * bz - az * by
+  out[1] = aw * by - ax * bz + ay * bw + az * bx
+  out[2] = aw * bz + ax * by - ay * bx + az * bw
+  out[3] = aw * bw - ax * bx - ay * by - az * bz
+  return out
+}
+function ikQuatConj(out, q) { out[0] = -q[0]; out[1] = -q[1]; out[2] = -q[2]; out[3] = q[3]; return out }
+function ikRotate(out, q, v) {
+  const x = v[0], y = v[1], z = v[2], qx = q[0], qy = q[1], qz = q[2], qw = q[3]
+  const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x)
+  out[0] = x + qw * tx + qy * tz - qz * ty
+  out[1] = y + qw * ty + qz * tx - qx * tz
+  out[2] = z + qw * tz + qx * ty - qy * tx
+  return out
+}
+function ikNorm(v) { const l = hypot3(v[0], v[1], v[2]); if (l > 1e-12) { v[0] /= l; v[1] /= l; v[2] /= l } return l }
+function ikNormQ(q) { const l = hypot4(q[0], q[1], q[2], q[3]) || 1; q[0] /= l; q[1] /= l; q[2] /= l; q[3] /= l; return q }
+// shortest rotation taking unit vector a onto unit vector b
+function ikFromTo(out, a, b) {
+  const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  if (d < -0.999999) {
+    // opposite: any perpendicular axis
+    let x = 0, y = -a[2], z = a[1]
+    if (Math.abs(a[0]) < 0.5) { x = 0; y = -a[2]; z = a[1] } else { x = -a[1]; y = a[0]; z = 0 }
+    const l = hypot3(x, y, z) || 1
+    out[0] = x / l; out[1] = y / l; out[2] = z / l; out[3] = 0
+    return out
+  }
+  out[0] = a[1] * b[2] - a[2] * b[1]
+  out[1] = a[2] * b[0] - a[0] * b[2]
+  out[2] = a[0] * b[1] - a[1] * b[0]
+  out[3] = 1 + d
+  return ikNormQ(out)
+}
+function ikSlerp(out, a, b, t) {
+  let bx = b[0], by = b[1], bz = b[2], bw = b[3]
+  let c = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw
+  if (c < 0) { c = -c; bx = -bx; by = -by; bz = -bz; bw = -bw }
+  let s0 = 1 - t, s1 = t
+  if (1 - c > 1e-6) { const o = Math.acos(c), so = Math.sin(o); s0 = Math.sin((1 - t) * o) / so; s1 = Math.sin(t * o) / so }
+  out[0] = s0 * a[0] + s1 * bx; out[1] = s0 * a[1] + s1 * by; out[2] = s0 * a[2] + s1 * bz; out[3] = s0 * a[3] + s1 * bw
+  return ikNormQ(out)
+}
+// World (model space) position / rotation / scale of node i, composed from the root (no shear, like the rig).
+function ikWorld(trs, parentIdx, i, pos, rot, scl) {
+  pos[0] = pos[1] = pos[2] = 0; rot[0] = rot[1] = rot[2] = 0; rot[3] = 1; scl[0] = scl[1] = scl[2] = 1
+  if (i < 0) return
+  const path = IK_TMP.path
+  let n = 0
+  for (let k = i; k >= 0 && n < path.length; k = parentIdx[k]) path[n++] = k
+  const t = IK_TMP.x, q = IK_TMP.qi
+  for (let j = n - 1; j >= 0; j--) {
+    const o = path[j] * IK_TRS
+    t[0] = trs[o] * scl[0]; t[1] = trs[o + 1] * scl[1]; t[2] = trs[o + 2] * scl[2]
+    ikRotate(t, rot, t)
+    pos[0] += t[0]; pos[1] += t[1]; pos[2] += t[2]
+    q[0] = trs[o + 3]; q[1] = trs[o + 4]; q[2] = trs[o + 5]; q[3] = trs[o + 6]
+    ikQuatMul(rot, rot, q)
+    scl[0] *= trs[o + 7]; scl[1] *= trs[o + 8]; scl[2] *= trs[o + 9]
+  }
+  ikNormQ(rot)
+}
+const ikGetQ = (trs, i, q) => { const o = i * IK_TRS + 3; q[0] = trs[o]; q[1] = trs[o + 1]; q[2] = trs[o + 2]; q[3] = trs[o + 3]; return q }
+const ikSetQ = (trs, i, q) => { const o = i * IK_TRS + 3; trs[o] = q[0]; trs[o + 1] = q[1]; trs[o + 2] = q[2]; trs[o + 3] = q[3] }
+// local rotation that gives `world` under a parent whose world rotation is `parentRot`: inv(parentRot) * world
+function ikLocal(out, parentRot, world) { return ikNormQ(ikQuatMul(out, ikQuatConj(IK_TMP.q3, parentRot), world)) }
+
+/**
+ * Solve `count` chains packed at data[at..] into trs. `saved` (Map node -> [x, y, z, w]) keeps the rotations it
+ * overwrote, so a pose that isn't resampled (paused model) can be restored first (ikRestore). `info` (optional,
+ * 4 floats per chain): the animated end position before IK (model space) and how far the target was (1 = at
+ * full reach).
+ */
+function applyIK(trs, parentIdx, data, at, count, saved, info) {
+  const T = IK_TMP
+  for (let c = 0; c < count; c++) {
+    const o = at + c * IK_STRIDE
+    const iu = data[o], il = data[o + 1], ie = data[o + 2], weight = data[o + 9]
+    ikWorld(trs, parentIdx, ie, T.pc, T.rc, T.sc)
+    // info (main thread): the end and the middle joint where the animation puts them, and the reach
+    if (info) {
+      info[c * 7] = T.pc[0]; info[c * 7 + 1] = T.pc[1]; info[c * 7 + 2] = T.pc[2]; info[c * 7 + 3] = 0
+      if (il >= 0) { ikWorld(trs, parentIdx, il, T.pb, T.rb, T.sb); info[c * 7 + 4] = T.pb[0]; info[c * 7 + 5] = T.pb[1]; info[c * 7 + 6] = T.pb[2] }
+    }
+    if (!(weight > 0) || iu < 0 || il < 0 || ie < 0) continue
+    if (saved) { ikSave(saved, trs, iu); ikSave(saved, trs, il); ikSave(saved, trs, ie) }
+    ikGetQ(trs, iu, T.lu); ikGetQ(trs, il, T.ll); ikGetQ(trs, ie, T.le)
+    ikWorld(trs, parentIdx, parentIdx[iu], T.pp, T.rp, T.sp)
+    ikWorld(trs, parentIdx, iu, T.pa, T.ra, T.sa)
+    ikWorld(trs, parentIdx, il, T.pb, T.rb, T.sb)
+    const A = T.pa, B = T.pb, C = T.pc
+    const l1 = hypot3(B[0] - A[0], B[1] - A[1], B[2] - A[2]), l2 = hypot3(C[0] - B[0], C[1] - B[1], C[2] - B[2])
+    const u = T.u
+    // the target, moved by the follow share of how far the animated end (C) went since the anchor
+    let tx = data[o + 3], ty = data[o + 4], tz = data[o + 5]
+    const fh = data[o + 29], fv = data[o + 30]
+    if (fh || fv) {
+      const dx = C[0] - data[o + 26], dy = C[1] - data[o + 27], dz = C[2] - data[o + 28]
+      const ux = data[o + 31], uy = data[o + 32], uz = data[o + 33]
+      const dv = dx * ux + dy * uy + dz * uz
+      tx += fh * (dx - dv * ux) + fv * dv * ux
+      ty += fh * (dy - dv * uy) + fv * dv * uy
+      tz += fh * (dz - dv * uz) + fv * dv * uz
+    }
+    u[0] = tx - A[0]; u[1] = ty - A[1]; u[2] = tz - A[2]
+    let d = ikNorm(u)
+    if (info) info[c * 7 + 3] = d / (l1 + l2 || 1)
+    if (d < 1e-9 || l1 < 1e-9 || l2 < 1e-9) continue
+    d = Math.min(Math.max(d, Math.abs(l1 - l2) + 1e-6), (l1 + l2) * 0.9999)
+    // bend side: toward the pole, else where the animated knee already points
+    const v = T.v
+    if (Number.isNaN(data[o + 6])) { v[0] = B[0] - A[0]; v[1] = B[1] - A[1]; v[2] = B[2] - A[2] }
+    else if (data[o + 34] === data[o + 34]) { v[0] = data[o + 6] - data[o + 34]; v[1] = data[o + 7] - data[o + 35]; v[2] = data[o + 8] - data[o + 36] } // (pole - anchor: as far from the upper joint as it was)
+    else { v[0] = data[o + 6] - A[0]; v[1] = data[o + 7] - A[1]; v[2] = data[o + 8] - A[2] }
+    let k = v[0] * u[0] + v[1] * u[1] + v[2] * u[2]
+    v[0] -= u[0] * k; v[1] -= u[1] * k; v[2] -= u[2] * k
+    if (ikNorm(v) < 1e-6) { ikRotate(v, T.ra, [1, 0, 0]); k = v[0] * u[0] + v[1] * u[1] + v[2] * u[2]; v[0] -= u[0] * k; v[1] -= u[1] * k; v[2] -= u[2] * k; ikNorm(v) }
+    const cosA = Math.min(1, Math.max(-1, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d))), sinA = Math.sqrt(1 - cosA * cosA)
+    // upper: its child (the lower bone) moves to the new knee
+    const from = T.w, to = T.x
+    from[0] = B[0] - A[0]; from[1] = B[1] - A[1]; from[2] = B[2] - A[2]; ikNorm(from)
+    to[0] = u[0] * cosA + v[0] * sinA; to[1] = u[1] * cosA + v[1] * sinA; to[2] = u[2] * cosA + v[2] * sinA; ikNorm(to)
+    ikFromTo(T.q1, from, to)
+    // a hinge (elbow, knee): the swing above carries the ANIMATED hinge along, so a bend plane far from the
+    // animation's made the lower bone turn sideways about the joint (an elbow bent the wrong way, a twisted
+    // forearm, flipping when the animation's arm changed). Twist the upper about its new direction so the hinge
+    // lies across the solved bend: the lower then only turns about it
+    if (data[o + 23] || data[o + 24] || data[o + 25]) {
+      const h = T.h, n = T.n
+      h[0] = data[o + 23]; h[1] = data[o + 24]; h[2] = data[o + 25]
+      ikRotate(h, T.rb, h)
+      ikRotate(h, T.q1, h)
+      // the solved bend's axis: upper direction x lower direction (from the new joint to the target)
+      const jx = A[0] + to[0] * l1, jy = A[1] + to[1] * l1, jz = A[2] + to[2] * l1
+      const lx = A[0] + u[0] * d - jx, ly = A[1] + u[1] * d - jy, lz = A[2] + u[2] * d - jz
+      n[0] = to[1] * lz - to[2] * ly; n[1] = to[2] * lx - to[0] * lz; n[2] = to[0] * ly - to[1] * lx
+      const kh = h[0] * to[0] + h[1] * to[1] + h[2] * to[2]
+      h[0] -= to[0] * kh; h[1] -= to[1] * kh; h[2] -= to[2] * kh
+      if (ikNorm(n) > 1e-6 && ikNorm(h) > 1e-6) {
+        if (h[0] * n[0] + h[1] * n[1] + h[2] * n[2] < -0.9999) {
+          T.qt[0] = to[0]; T.qt[1] = to[1]; T.qt[2] = to[2]; T.qt[3] = 0 // half a turn about the upper
+        } else ikFromTo(T.qt, h, n)
+        ikQuatMul(T.q1, T.qt, T.q1)
+      }
+    }
+    ikQuatMul(T.q2, T.q1, T.ra)                      // new upper world rotation
+    ikLocal(T.su, T.rp, T.q2)
+    ikSetQ(trs, iu, T.su)
+    // lower: the end moves onto the target
+    ikWorld(trs, parentIdx, il, T.pb, T.rb, T.sb)
+    ikWorld(trs, parentIdx, ie, T.pc, T.rc, T.sc)
+    from[0] = T.pc[0] - T.pb[0]; from[1] = T.pc[1] - T.pb[1]; from[2] = T.pc[2] - T.pb[2]; ikNorm(from)
+    to[0] = A[0] + u[0] * d - T.pb[0]; to[1] = A[1] + u[1] * d - T.pb[1]; to[2] = A[2] + u[2] * d - T.pb[2]; ikNorm(to)
+    ikFromTo(T.q1, from, to)
+    ikQuatMul(T.q2, T.q1, T.rb)
+    ikWorld(trs, parentIdx, iu, T.pa, T.ra, T.sa)
+    ikLocal(T.sl, T.ra, T.q2)
+    ikSetQ(trs, il, T.sl)
+    // end: turn a bone-local axis onto a direction
+    const ew = data[o + 16]
+    T.se[0] = T.le[0]; T.se[1] = T.le[1]; T.se[2] = T.le[2]; T.se[3] = T.le[3]
+    if (ew > 0 && (data[o + 10] || data[o + 11] || data[o + 12])) {
+      ikWorld(trs, parentIdx, il, T.pb, T.rb, T.sb)
+      ikWorld(trs, parentIdx, ie, T.pc, T.rc, T.sc)
+      from[0] = data[o + 10]; from[1] = data[o + 11]; from[2] = data[o + 12]; ikNorm(from)
+      ikRotate(from, T.rc, from)
+      to[0] = data[o + 13]; to[1] = data[o + 14]; to[2] = data[o + 15]
+      if (ikNorm(to) > 1e-9) {
+        ikFromTo(T.q1, from, to)
+        ikQuatMul(T.q2, T.q1, T.rc)
+        // a second axis: twist about the first direction so it points as close as it can to its own direction
+        // (the palm on a wall, the fingers up: the animation can't spin the hand about the palm any more)
+        if (data[o + 17] || data[o + 18] || data[o + 19]) {
+          const a2 = T.a2, d2 = T.d2
+          a2[0] = data[o + 17]; a2[1] = data[o + 18]; a2[2] = data[o + 19]; ikNorm(a2)
+          ikRotate(a2, T.q2, a2)
+          d2[0] = data[o + 20]; d2[1] = data[o + 21]; d2[2] = data[o + 22]
+          let k2 = a2[0] * to[0] + a2[1] * to[1] + a2[2] * to[2]
+          a2[0] -= to[0] * k2; a2[1] -= to[1] * k2; a2[2] -= to[2] * k2
+          k2 = d2[0] * to[0] + d2[1] * to[1] + d2[2] * to[2]
+          d2[0] -= to[0] * k2; d2[1] -= to[1] * k2; d2[2] -= to[2] * k2
+          if (ikNorm(a2) > 1e-6 && ikNorm(d2) > 1e-6) {
+            if (a2[0] * d2[0] + a2[1] * d2[1] + a2[2] * d2[2] < -0.9999) {
+              T.qt[0] = to[0]; T.qt[1] = to[1]; T.qt[2] = to[2]; T.qt[3] = 0 // half a turn about the first direction
+            } else ikFromTo(T.qt, a2, d2)
+            ikQuatMul(T.q2, T.qt, T.q2)
+          }
+        }
+        ikLocal(T.q1, T.rb, T.q2)
+        ikSlerp(T.se, T.le, T.q1, Math.min(1, ew))
+      }
+    }
+    // weight: between the animated and the solved pose
+    if (weight < 1) {
+      ikSlerp(T.su, T.lu, T.su, weight); ikSlerp(T.sl, T.ll, T.sl, weight); ikSlerp(T.se, T.le, T.se, weight)
+      ikSetQ(trs, iu, T.su); ikSetQ(trs, il, T.sl)
+    }
+    ikSetQ(trs, ie, T.se)
+  }
+}
+function ikSave(saved, trs, n) {
+  if (saved.has(n)) return
+  const q = ikGetQ(trs, n, IK_TMP.qi)
+  saved.set(n, [q[0], q[1], q[2], q[3]])
+}
+/** Put back the rotations applyIK overwrote (before solving again on a pose that wasn't resampled). */
+function ikRestore(trs, saved) {
+  for (const [n, q] of saved) ikSetQ(trs, n, q)
+  saved.clear()
+}
+
+// ---- Jiggle bones (script API setJiggleBone). KEEP IN SYNC: v1 / v2 workers ----
+// A spring per bone: its tip (`length` model units out along `axis`, bone-local, default +Y: the way the part it
+// moves points) is pulled toward where the animation puts it (`stiffness`, `damping` against the tip's speed relative
+// to it, `drag` against its speed in the world), simulated in world space so the model's moves and turns swing it;
+// the bone then turns to point at the simulated tip, at most `maxAngle` away from its animated direction. `gravity`
+// (px/s^2, 0 = none) pulls the tip down in the world. `anchor` (a node, -1 = none): the rest direction follows that
+// node instead of the bone's parent, keeping a fixed rotation to it: `anchorPose` (the bone's model-space rotation
+// relative to the anchor's, x y z w; NaN = the bind pose's) turned by `anchorTilt` (rad, about the bone's own axes,
+// gl-matrix fromEuler order), `anchorWeight` of the way (0..1): a sword on the thigh that should hang from the hips.
+// `limitAxis` (parent-local, all 0 = none) + `limitAngle` (rad): the tip goes at most that far toward the axis from
+// its rest direction without the animation (the bind pose under the parent, or the anchored one): the body under a
+// cape; clips that swing the bone further in are held too: 0 = never closer to the body than that, < 0 = held off
+// it, > 0 = allowed in. Packed per slot: [n, then if n: dt, model matrix (16, model -> world), (node, stiffness,
+// damping, max angle (rad), length, gravity, axis xyz, anchor, anchor weight, anchor pose xyzw, anchor tilt xyz (rad),
+// limit axis xyz, limit angle (rad), drag) * n].
+const JIG_STRIDE = 23
+const JIG_TMP = { p: ikV(), r: ikQ(), s: ikV(), pp: ikV(), pr: ikQ(), ps: ikV(), a: [0, 0, 0], q: [0, 0, 0, 1], q2: [0, 0, 0, 1], l: [0, 0, 0, 1], inv: new Float64Array(16), f: [0, 0, 0], t: [0, 0, 0],
+  ap: ikV(), ar: ikQ(), as: ikV(), ra: ikQ(), rel: ikQ(), tilt: ikQ(), ax: [0, 1, 0], vt: [0, 0, 0], n: [0, 0, 0], m: [0, 0, 0] }
+function jigXf(m, x, y, z, out) {
+  out[0] = m[0] * x + m[4] * y + m[8] * z + m[12]
+  out[1] = m[1] * x + m[5] * y + m[9] * z + m[13]
+  out[2] = m[2] * x + m[6] * y + m[10] * z + m[14]
+  return out
+}
+// inverse of an affine 4x4 (column-major); false when singular
+function jigInvert(out, m) {
+  const a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], k = m[10]
+  const A = e * k - f * h, B = -(d * k - f * g), C = d * h - e * g
+  const det = a * A + b * B + c * C
+  if (Math.abs(det) < 1e-12) return false
+  const id = 1 / det
+  out[0] = A * id; out[1] = -(b * k - c * h) * id; out[2] = (b * f - c * e) * id; out[3] = 0
+  out[4] = B * id; out[5] = (a * k - c * g) * id; out[6] = -(a * f - c * d) * id; out[7] = 0
+  out[8] = C * id; out[9] = -(a * h - b * g) * id; out[10] = (a * e - b * d) * id; out[11] = 0
+  const tx = m[12], ty = m[13], tz = m[14]
+  out[12] = -(out[0] * tx + out[4] * ty + out[8] * tz)
+  out[13] = -(out[1] * tx + out[5] * ty + out[9] * tz)
+  out[14] = -(out[2] * tx + out[6] * ty + out[10] * tz)
+  out[15] = 1
+  return true
+}
+// the bone's bind-pose world rotation relative to the anchor's: inv(anchor rest) * bone rest (cached per pair)
+function jigAnchorRel(rec, parentIdx, baseTRS, i, an) {
+  const cache = rec.jigRel || (rec.jigRel = new Map())
+  const key = i * 4096 + an
+  let q = cache.get(key)
+  if (!q) {
+    const T = JIG_TMP
+    q = ikQ()
+    ikWorld(baseTRS, parentIdx, an, T.ap, T.ar, T.as)
+    ikWorld(baseTRS, parentIdx, i, T.pp, T.pr, T.ps)
+    ikLocal(q, T.ar, T.pr)
+    cache.set(key, q)
+  }
+  return q
+}
+function applyJiggle(rec, parentIdx, data, at, count, saved, baseTRS) {
+  const T = JIG_TMP
+  const dt = Math.min(0.05, Math.max(0, data[at] || 0))
+  const M = data.subarray(at + 1, at + 17)
+  if (!jigInvert(T.inv, M)) return
+  const st = rec.jig || (rec.jig = new Map())
+  const steps = Math.max(1, Math.ceil(dt * 120)), h = dt / steps
+  const Bw = [0, 0, 0], Tw = [0, 0, 0], pm = [0, 0, 0]
+  for (let c = 0; c < count; c++) {
+    const o = at + 17 + c * JIG_STRIDE
+    const i = data[o], k = data[o + 1], damp = data[o + 2], maxA = data[o + 3], len = data[o + 4], grav = data[o + 5] || 0
+    const ax = T.ax
+    ax[0] = data[o + 6] || 0; ax[1] = data[o + 7] || 0; ax[2] = data[o + 8] || 0
+    if (ikNorm(ax) < 1e-9) { ax[0] = 0; ax[1] = 1; ax[2] = 0 }
+    const an = data[o + 9], aw = Math.min(1, Math.max(0, data[o + 10] || 0)), lx = data[o + 18] || 0, ly = data[o + 19] || 0, lz = data[o + 20] || 0, limA = data[o + 21] || 0, drag = Math.max(0, data[o + 22] || 0)
+    if (!(i >= 0)) continue
+    if (saved && !saved.has(i)) saved.set(i, Array.from(ikGetQ(rec.trs, i, T.q)))
+    ikWorld(rec.trs, parentIdx, i, T.p, T.r, T.s)
+    // the rest direction: the animated one, or (part of the way) the one that keeps the bind-pose angle to the anchor
+    if (an >= 0 && an !== i && aw > 0 && baseTRS) {
+      ikWorld(rec.trs, parentIdx, an, T.ap, T.ar, T.as)
+      const rel = T.rel
+      if (Number.isFinite(data[o + 11]) && Number.isFinite(data[o + 14])) { rel[0] = data[o + 11]; rel[1] = data[o + 12]; rel[2] = data[o + 13]; rel[3] = data[o + 14]; ikNormQ(rel) }
+      else { const b = jigAnchorRel(rec, parentIdx, baseTRS, i, an); rel[0] = b[0]; rel[1] = b[1]; rel[2] = b[2]; rel[3] = b[3] }
+      const ex = (data[o + 15] || 0) / 2, ey = (data[o + 16] || 0) / 2, ez = (data[o + 17] || 0) / 2
+      if (ex || ey || ez) { // gl-matrix quat.fromEuler (like setBoneRotationOffset)
+        const sx = Math.sin(ex), cx = Math.cos(ex), sy = Math.sin(ey), cy = Math.cos(ey), sz = Math.sin(ez), cz = Math.cos(ez), q = T.tilt
+        q[0] = sx * cy * cz - cx * sy * sz; q[1] = cx * sy * cz + sx * cy * sz; q[2] = cx * cy * sz - sx * sy * cz; q[3] = cx * cy * cz + sx * sy * sz
+        ikQuatMul(rel, rel, q)
+      }
+      ikQuatMul(T.ra, T.ar, rel)
+      ikSlerp(T.r, T.r, T.ra, aw)
+    }
+    T.a[0] = ax[0] * len; T.a[1] = ax[1] * len; T.a[2] = ax[2] * len
+    ikRotate(T.a, T.r, T.a)
+    const tx = T.p[0] + T.a[0], ty = T.p[1] + T.a[1], tz = T.p[2] + T.a[2] // the rest tip (model space)
+    jigXf(M, T.p[0], T.p[1], T.p[2], Bw)
+    jigXf(M, tx, ty, tz, Tw)
+    const Lw = hypot3(Tw[0] - Bw[0], Tw[1] - Bw[1], Tw[2] - Bw[2]) || 1
+    let s = st.get(i)
+    if (!s || hypot3(s.p[0] - Tw[0], s.p[1] - Tw[1], s.p[2] - Tw[2]) > Lw * 4) { s = { p: Tw.slice(), v: [0, 0, 0], t: Tw.slice() }; st.set(i, s) }
+    // the rest tip moves from last frame's to this one's over the substeps; damping slows the tip relative to it,
+    // drag slows it in the world (air: a coat streams back while running)
+    const st0 = s.t, ivt = dt > 0 ? 1 / dt : 0, vt = T.vt
+    for (let x = 0; x < 3; x++) vt[x] = (Tw[x] - st0[x]) * ivt // the rest tip's velocity
+    for (let n = 0; n < steps; n++) {
+      const u = n / steps // (the rest tip at the substep's start: semi-implicit Euler, no lag at a steady speed)
+      for (let x = 0; x < 3; x++) {
+        const tgt = st0[x] + (Tw[x] - st0[x]) * u
+        s.v[x] += (k * (tgt - s.p[x]) - damp * (s.v[x] - vt[x]) - drag * s.v[x] - (x === 2 ? grav : 0)) * h // world z is up
+        s.p[x] += s.v[x] * h
+      }
+    }
+    st0[0] = Tw[0]; st0[1] = Tw[1]; st0[2] = Tw[2]
+    // the bone keeps its length, and stays within maxAngle of its rest direction
+    const r0 = [(Tw[0] - Bw[0]) / Lw, (Tw[1] - Bw[1]) / Lw, (Tw[2] - Bw[2]) / Lw]
+    const d = [s.p[0] - Bw[0], s.p[1] - Bw[1], s.p[2] - Bw[2]]
+    ikNorm(d)
+    const cosA = r0[0] * d[0] + r0[1] * d[1] + r0[2] * d[2]
+    if (cosA < Math.cos(maxA)) {
+      const pp = [d[0] - r0[0] * cosA, d[1] - r0[1] * cosA, d[2] - r0[2] * cosA]
+      if (ikNorm(pp) > 1e-9) for (let x = 0; x < 3; x++) d[x] = r0[x] * Math.cos(maxA) + pp[x] * Math.sin(maxA)
+      // half the speed relative to the rest tip (not in the world: a model moving fast held the tip at the limit)
+      for (let x = 0; x < 3; x++) s.v[x] = vt[x] + (s.v[x] - vt[x]) * 0.5
+    }
+    // one-sided limit: toward the limit axis (the body), at most limitAngle from the rest direction without the
+    // animation: the bind pose under the parent (or the anchored one, as far as anchored)
+    if (lx || ly || lz) {
+      const n = T.n, m = T.m, b0 = T.f
+      ikWorld(rec.trs, parentIdx, parentIdx[i], T.pp, T.pr, T.ps)
+      ikQuatMul(T.q2, T.pr, ikGetQ(baseTRS || rec.trs, i, T.q)) // the bone's bind rotation under its parent
+      if (an >= 0 && an !== i && aw > 0 && baseTRS) ikSlerp(T.q2, T.q2, T.ra, aw)
+      T.a[0] = ax[0]; T.a[1] = ax[1]; T.a[2] = ax[2]
+      ikRotate(b0, T.q2, T.a)
+      n[0] = lx; n[1] = ly; n[2] = lz
+      ikRotate(n, T.pr, n)
+      const bx = M[0] * b0[0] + M[4] * b0[1] + M[8] * b0[2], by = M[1] * b0[0] + M[5] * b0[1] + M[9] * b0[2], bz = M[2] * b0[0] + M[6] * b0[1] + M[10] * b0[2]
+      const nx = M[0] * n[0] + M[4] * n[1] + M[8] * n[2], ny = M[1] * n[0] + M[5] * n[1] + M[9] * n[2], nz = M[2] * n[0] + M[6] * n[1] + M[10] * n[2]
+      b0[0] = bx; b0[1] = by; b0[2] = bz
+      ikNorm(b0)
+      const nb = nx * b0[0] + ny * b0[1] + nz * b0[2]
+      n[0] = nx - b0[0] * nb; n[1] = ny - b0[1] * nb; n[2] = nz - b0[2] * nb // across the bind direction
+      if (ikNorm(n) > 1e-9) {
+        const ca = d[0] * b0[0] + d[1] * b0[1] + d[2] * b0[2], sa = d[0] * n[0] + d[1] * n[1] + d[2] * n[2]
+        if (Math.atan2(sa, ca) > limA) {
+          // keep the sideways part, put the in/out part on the limit
+          m[0] = b0[1] * n[2] - b0[2] * n[1]; m[1] = b0[2] * n[0] - b0[0] * n[2]; m[2] = b0[0] * n[1] - b0[1] * n[0]
+          const cm = d[0] * m[0] + d[1] * m[1] + d[2] * m[2], rho = Math.sqrt(Math.max(0, 1 - cm * cm))
+          const c2 = rho * Math.cos(limA), s2 = rho * Math.sin(limA)
+          for (let x = 0; x < 3; x++) d[x] = b0[x] * c2 + n[x] * s2 + m[x] * cm
+          // no speed into the body relative to the rest tip
+          const vin = (s.v[0] - vt[0]) * n[0] + (s.v[1] - vt[1]) * n[1] + (s.v[2] - vt[2]) * n[2]
+          if (vin > 0) for (let x = 0; x < 3; x++) s.v[x] -= n[x] * vin
+        }
+      }
+    }
+    for (let x = 0; x < 3; x++) s.p[x] = Bw[x] + d[x] * Lw
+    // back in model space: turn the bone from its animated tip toward the simulated one
+    jigXf(T.inv, s.p[0], s.p[1], s.p[2], pm)
+    ikWorld(rec.trs, parentIdx, i, T.p, T.r, T.s) // the animated rotation (the anchor replaced it above)
+    T.a[0] = ax[0] * len; T.a[1] = ax[1] * len; T.a[2] = ax[2] * len
+    ikRotate(T.f, T.r, T.a)
+    T.t[0] = pm[0] - T.p[0]; T.t[1] = pm[1] - T.p[1]; T.t[2] = pm[2] - T.p[2]
+    if (ikNorm(T.f) < 1e-9 || ikNorm(T.t) < 1e-9) continue
+    ikFromTo(T.q, T.f, T.t)
+    ikQuatMul(T.q2, T.q, T.r)
+    ikWorld(rec.trs, parentIdx, parentIdx[i], T.pp, T.pr, T.ps)
+    ikLocal(T.l, T.pr, T.q2)
+    ikSetQ(rec.trs, i, T.l)
+  }
+}
+
+// ---- Bone rotation offsets (script API setBoneRotationOffset). KEEP IN SYNC: gltfWorker.js / gltfModelW.js ----
+// An extra local rotation per node multiplied onto the sampled rotation (rot = sampled * offset, about the
+// bone's own axes). Packed as [count, (nodeIndex, x, y, z, w) * count]. Each offset node's pre-offset rotation is
+// kept in `saved` and put back before the next sample, so an offset never stacks up on a node the clip doesn't
+// animate (its TRS isn't re-sampled every frame).
+function restoreBoneOffsets(trs, saved) {
+  for (const [ni, q] of saved) {
+    const o = ni * TRS_STRIDE + 3
+    trs[o] = q[0]; trs[o + 1] = q[1]; trs[o + 2] = q[2]; trs[o + 3] = q[3]
+  }
+  saved.clear()
+}
+function applyBoneOffsets(trs, offs, p, count, saved, nodeCount) {
+  for (let k = 0; k < count; k++, p += 5) {
+    const ni = offs[p]
+    if (!(ni >= 0 && ni < nodeCount)) continue
+    const o = ni * TRS_STRIDE + 3
+    const ax = trs[o], ay = trs[o + 1], az = trs[o + 2], aw = trs[o + 3]
+    if (!saved.has(ni)) saved.set(ni, [ax, ay, az, aw])
+    const bx = offs[p + 1], by = offs[p + 2], bz = offs[p + 3], bw = offs[p + 4]
+    trs[o] = aw * bx + ax * bw + ay * bz - az * by
+    trs[o + 1] = aw * by - ax * bz + ay * bw + az * bx
+    trs[o + 2] = aw * bz + ax * by - ay * bx + az * bw
+    trs[o + 3] = aw * bw - ax * bx - ay * by - az * bz
+  }
+}
+
 let graph = null
 // Per skin group: { positions: Float32Array(joints*3), radii: Float32Array(joints) }
 let groupRadii = null
@@ -663,12 +1197,14 @@ function buildGraph(g) {
   for (const grp of groups) floats += (grp.joints.length + 1) * 16
   const boundsOffset = floats
   floats += 8
+  const readbackOffset = floats
+  floats += RB_MAX * 12
 
   const baseTRS = initTRS(new Float32Array(n * TRS_STRIDE), nodes)
   const rootIdx = roots.length ? idxOf.get(roots[0]) : -1
   return {
     n, nodes, idxOf, parentIdx, order: new Int32Array(order), isStatic,
-    unskinned: new Int32Array(unskinned), groups, floats, boundsOffset, baseTRS, rootIdx,
+    unskinned: new Int32Array(unskinned), groups, floats, boundsOffset, readbackOffset, baseTRS, rootIdx,
   }
 }
 
@@ -780,16 +1316,71 @@ function onBatch(e) {
   if (!out || out.byteLength < need) out = new ArrayBuffer(Math.max(need, 64))
   const outF = new Float32Array(out)
   const anims = sharedGltf.animations || []
+  const offs = e.data.offs ? new Float32Array(e.data.offs) : null
+  let op = 0
   for (let i = 0; i < count; i++) {
     const b = i * REQ_STRIDE
+    const nOff = offs ? offs[op++] : 0
+    const offAt = op
+    op += nOff * 5
+    const nMix = offs ? offs[op++] : 0
+    const mixAt = op
+    op += nMix * 3
+    const nIK = offs ? offs[op++] : 0
+    const ikAt = op
+    op += nIK * IK_STRIDE
+    const nJig = offs ? offs[op++] : 0
+    const jigAt = op
+    if (nJig) op += 17 + nJig * JIG_STRIDE
+    const nRB = offs ? offs[op++] : 0
+    const rbAt = op
+    op += nRB
     const rec = instances.get(req[b])
     if (!rec) continue
+    let mix = null
+    if (nMix) {
+      mix = rec.mix || (rec.mix = { count: 0, anims: [], idx: [], w: [], ph: [] })
+      mix.count = nMix
+      for (let k = 0; k < nMix; k++) {
+        const ai = offs[mixAt + k * 3]
+        mix.idx[k] = ai
+        mix.anims[k] = anims[ai]
+        mix.w[k] = offs[mixAt + k * 3 + 1]
+        mix.ph[k] = offs[mixAt + k * 3 + 2]
+      }
+    }
+    const saved = rec.offSaved || (rec.offSaved = new Map())
+    const hadOffsets = saved.size > 0
+    // undo in the reverse order of applying: IK (last) first, then the offsets
+    const ikSaved = rec.ikSaved || (rec.ikSaved = new Map())
+    const hadIK = ikSaved.size > 0
+    const jigSaved = rec.jigSaved || (rec.jigSaved = new Map())
+    const hadJig = jigSaved.size > 0
+    if (hadJig) ikRestore(rec.trs, jigSaved)
+    if (hadIK) ikRestore(rec.trs, ikSaved)
+    if (hadOffsets) restoreBoneOffsets(rec.trs, saved)
     const animIndex = req[b + 1]
     if (animIndex >= 0) {
       const anim = anims[animIndex]
-      if (anim) sampleAnimation(rec.sampler, anim, animIndex, req[b + 2], req[b + 3], req[b + 4], req[b + 5] !== 0, rec.trs)
+      if (anim) sampleAnimation(rec.sampler, anim, animIndex, req[b + 2], req[b + 3], req[b + 4], req[b + 5] !== 0, rec.trs, mix)
     }
+    if (nOff) applyBoneOffsets(rec.trs, offs, offAt, nOff, saved, graph.n)
+    if (nIK) applyIK(rec.trs, graph.parentIdx, offs, ikAt, nIK, ikSaved, null)
+    if (nJig) applyJiggle(rec, graph.parentIdx, offs, jigAt, nJig, jigSaved, graph.baseTRS)
+    // cached world matrices of static nodes may sit under an offset, IK or jiggle bone
+    if (nOff || hadOffsets || nIK || hadIK || nJig || hadJig) { rec.matValid.fill(0); rec.invValid.fill(0) } // incl. cached skin-root inverses
     computePose(rec, outF, i * graph.floats)
+    // the drawn nodes (setDrawnNodes): their model-space matrices as this pose draws them
+    if (nRB) {
+      const at = i * graph.floats + graph.readbackOffset, m = rec.mat
+      for (let j = 0; j < nRB && j < RB_MAX; j++) {
+        const mo = offs[rbAt + j] * 16, w = at + j * 12
+        outF[w] = m[mo]; outF[w + 1] = m[mo + 1]; outF[w + 2] = m[mo + 2]
+        outF[w + 3] = m[mo + 4]; outF[w + 4] = m[mo + 5]; outF[w + 5] = m[mo + 6]
+        outF[w + 6] = m[mo + 8]; outF[w + 7] = m[mo + 9]; outF[w + 8] = m[mo + 10]
+        outF[w + 9] = m[mo + 12]; outF[w + 10] = m[mo + 13]; outF[w + 11] = m[mo + 14]
+      }
+    }
   }
   const msg = { type: "batchResult", count, req: reqBuf, out }
   msgPort.postMessage(msg, [reqBuf, out])
@@ -1141,7 +1732,8 @@ function updateAnimation(animationData) {
 
     // Blend to last animation if during blend
     if (blendState == "blend") {
-      const blend = blendTime == 0 ? 0 : blendTime / animationBlend
+      const linear = blendTime == 0 ? 0 : Math.min(1, blendTime / animationBlend)
+      const blend = linear * linear * (3 - 2 * linear) // eased in and out: no sudden start or stop of the transition
       const blendTargetI = blendTarget[i]
       if (blendTargetI != null) {
         if (target.path == "translation" && blendTargetI.path == "translation")

@@ -33,7 +33,9 @@
     },
 
     PlayAnimation(animation, loop) {
-      if (!this.loaded) return
+      // not loaded yet: played once it is (a spawn's first state, dropped, left the model on the glb's first clip
+      // until the next state change)
+      if (!this.loaded) { this._pendingPlay = [animation, loop]; return }
       let names = this.gltf.getAnimationNames()
       if (!names) return
       let newAnimationIndex = -1
@@ -85,6 +87,22 @@
 
 
 
+
+    SetBoneRotationOffset(boneName, x, y, z) {
+      this._setBoneRotationOffset(boneName, x, y, z)
+    },
+
+    ClearBoneRotationOffsets() {
+      this._clearBoneRotationOffsets()
+    },
+
+    SetAnimationBlendWeight(animationName, weight) {
+      this._setAnimationBlendWeight(animationName, weight)
+    },
+
+    ClearAnimationBlendWeights() {
+      this._clearAnimationBlendWeights()
+    },
 
     EnableNode(nodeName, enable) {
       if (!this.gltf) return
